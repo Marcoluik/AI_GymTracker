@@ -3,6 +3,12 @@
   command = "npm run build"
   publish = "dist"
 
+# All VITE_* env vars are inlined into the client bundle by Vite by design
+# (they're public — the anon key is meant to ship to browsers, gated by RLS).
+# Tell Netlify's secrets scanner to skip them, otherwise every build fails.
+[build.environment]
+  SECRETS_SCAN_OMIT_KEYS = "VITE_SUPABASE_URL,VITE_SUPABASE_ANON_KEY,VITE_ALLOWED_EMAIL"
+
 # SPA: route everything to index.html so React Router handles client-side routes.
 [[redirects]]
   from   = "/*"
