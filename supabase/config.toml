@@ -1,0 +1,10 @@
+# Supabase project config (used by `supabase` CLI).
+# Project ref is set via `supabase link --project-ref ...`.
+
+project_id = "gymtracker"
+
+[functions.log-workout]
+verify_jwt = false
+
+[functions.program-editor]
+verify_jwt = false

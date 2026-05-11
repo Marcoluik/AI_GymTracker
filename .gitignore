@@ -1,0 +1,15 @@
+# Supabase CLI
+.supabase/
+supabase/.temp/
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
