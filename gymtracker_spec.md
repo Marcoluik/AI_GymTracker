@@ -6,76 +6,84 @@ Paste this entire file to Claude when you want to change anything. Claude will p
 
 ## What this system does
 
-I go to the gym 6 days a week. I have 3 workout types: chest, back, legs. Sometimes I run. I have a base program (default weights per exercise). All my sets are to failure so I don't track reps.
+Two interfaces, one Supabase database:
 
-After each workout I open an iOS Shortcut on my iPhone. I pick my workout type (chest / back / legs / run) from a menu. A text box appears. I type any differences from my normal session, e.g. "did flies with 40kg instead of 35" or "felt strong today" or just leave it blank if it was normal. The shortcut sends this to my system. AI parses it and logs the workout to my database automatically.
+1. **iOS Shortcut** — after every workout, pick chest/back/legs/run, optionally type what was different. POSTed to a Supabase edge function which calls Claude to parse it and write rows to the DB.
+2. **Web app on Netlify** — for editing the base program, browsing past workouts, and viewing trends. Auth via Supabase magic-link email (locked to one email).
+
+Single-user. All sets are to failure so reps are never tracked.
 
 ---
 
 ## Tech stack
 
-- Database + backend: Supabase (database AND edge functions — one platform, one account)
-- AI parsing: Claude API (`claude-sonnet-4-20250514`) called from inside the Supabase edge function
-- Trigger: iOS Shortcuts (webhook POST to the edge function URL)
-- Code storage: GitHub repo
-- Web UI for editing my base program: Supabase table editor (built-in, no extra app needed)
+- **Database + Auth**: Supabase (Postgres + Auth + Edge Functions)
+- **AI parsing**: Claude API (`claude-sonnet-4-20250514`) called from the edge function
+- **iOS Shortcut**: POSTs a JSON webhook to the edge function URL
+- **Web app**: React + Vite + TypeScript + Tailwind + Recharts; deployed on Netlify, auto-redeploys from the GitHub repo
+- **Code storage**: GitHub repo at `MK-personlig/AI_GymTracker`
 
-Nothing else. No n8n, no Railway, no Render, no separate server.
+Nothing else. No n8n, no Railway, no Vercel, no separate server.
 
 ---
 
-## Full flow
+## Flows
 
-1. I open iOS Shortcut, pick workout type, optionally type a note.
-2. Shortcut sends POST request to Supabase edge function URL with:
-   ```json
-   { "workout_type": "chest", "message": "did flies with 40kg", "date": "2025-05-08" }
-   ```
-3. Edge function fetches my base program for that workout type from the `program` table in Supabase.
-4. Edge function calls Claude API with the base program + my message.
-5. Claude returns structured JSON of what I actually did.
-6. Edge function writes the log to the `workouts` and `sets` tables.
-7. Done. I never see any of this.
+### Logging a workout (iOS Shortcut)
+1. Pick workout type, optionally type a note.
+2. Shortcut POSTs `{ workout_type, message, date }` to `/functions/v1/log-workout`.
+3. Edge function fetches base program for that type, sends program + user message to Claude.
+4. Claude returns structured JSON of what actually happened.
+5. Edge function inserts a `workouts` row and either `sets` (for chest/back/legs) or a `runs` row.
+
+### Editing program / browsing data (web app)
+1. Open Netlify URL in browser (bookmarked on iPhone home screen).
+2. Sign in with email → click magic link → in.
+3. Tabs: **Program** (CRUD on `program` table), **Workouts** (list + detail view), **Trends** (charts).
+
+The web app talks directly to Supabase via `@supabase/supabase-js` using the anon key. Row Level Security policies restrict all tables to the authenticated user's email.
 
 ---
 
 ## Database schema
 
 **Table: program**
-- id (int, primary key)
-- workout_type (text) — "chest", "back", "legs"
-- exercise_name (text) — snake_case e.g. "incline_chest_press"
-- default_weight_kg (float, nullable — NULL means bodyweight)
-- display_order (int)
+- `id` (int, PK)
+- `workout_type` (text) — "chest", "back", "legs"
+- `exercise_name` (text, snake_case)
+- `default_weight_kg` (float, nullable — NULL = bodyweight)
+- `display_order` (int)
 - UNIQUE (workout_type, exercise_name)
 
 **Table: workouts**
-- id (uuid, primary key, auto)
-- date (date)
-- workout_type (text)
-- raw_message (text) — what I typed verbatim
-- notes (text) — freeform notes Claude extracted
-- created_at (timestamp, auto)
+- `id` (uuid, PK, auto)
+- `date` (date)
+- `workout_type` (text)
+- `raw_message` (text) — what was typed verbatim
+- `notes` (text) — freeform notes Claude extracted
+- `created_at` (timestamptz, auto)
 
 **Table: sets**
-- id (uuid, primary key, auto)
-- workout_id (uuid, foreign key → workouts.id, ON DELETE CASCADE)
-- exercise_name (text)
-- weight_kg (float, nullable)
-- skipped (boolean, default false)
-- is_deviation (boolean) — true if different from base program
-- created_at (timestamp, auto)
+- `id` (uuid, PK, auto)
+- `workout_id` (uuid, FK → workouts.id, ON DELETE CASCADE)
+- `exercise_name` (text)
+- `weight_kg` (float, nullable)
+- `skipped` (bool, default false)
+- `is_deviation` (bool) — true if different from base program
+- `created_at` (timestamptz, auto)
 
 **Table: runs**
-- id (uuid, primary key, auto)
-- workout_id (uuid, foreign key → workouts.id, ON DELETE CASCADE)
-- duration_minutes (int, nullable)
-- distance_km (float, nullable)
-- notes (text, nullable)
+- `id` (uuid, PK, auto)
+- `workout_id` (uuid, FK → workouts.id, ON DELETE CASCADE)
+- `duration_minutes` (int, nullable)
+- `distance_km` (float, nullable)
+- `notes` (text, nullable)
+
+RLS: all four tables have a single `FOR ALL TO authenticated` policy gated on `auth.jwt() ->> 'email' = '<owner_email>'`. The edge function uses the service-role key (bypasses RLS).
 
 ---
 
-## Claude parsing prompt (inside the edge function)
+## Claude parsing prompt (inside log-workout edge function)
 
 **SYSTEM:**
 ```
@@ -99,17 +107,9 @@ OUTPUT FORMAT:
   "date": "YYYY-MM-DD",
   "notes": "felt strong, shoulder a bit tight" or null,
   "exercises": [
-    {
-      "exercise_name": "incline_chest_press",
-      "weight_kg": 30,
-      "skipped": false,
-      "is_deviation": true
-    }
+    { "exercise_name": "incline_chest_press", "weight_kg": 30, "skipped": false, "is_deviation": true }
   ],
-  "run": {
-    "duration_minutes": 35,
-    "distance_km": 5.2
-  }
+  "run": { "duration_minutes": 35, "distance_km": 5.2 }
 }
 
 Include "exercises" for chest/back/legs. Include "run" only for workout_type "run". is_deviation is true only if weight differs from base program or exercise was added/skipped.
@@ -117,39 +117,17 @@ Include "exercises" for chest/back/legs. Include "run" only for workout_type "ru
 
 ---
 
-## My base program (current)
+## Constraints (always)
 
-CHEST:
-- incline_chest_press: 28kg
-- flat_bench_press: 32kg
-- cable_flies: 35kg
-- shoulder_press: 24kg
-- lateral_raises: 14kg
-
-BACK:
-- pull_ups: bodyweight
-- seated_cable_row: 60kg
-- lat_pulldown: 65kg
-- face_pulls: 20kg
-- barbell_row: 70kg
-
-LEGS:
-- squat: 80kg
-- leg_press: 140kg
-- romanian_deadlift: 70kg
-- leg_extension: 50kg
-- leg_curl: 45kg
-- calf_raises: 60kg
-
-(Live source of truth is the `program` table in Supabase — edit there.)
+- Never suggest additional services beyond the stack above. No Vercel, no Render, no n8n, no separate backend.
+- Never ask the user to write or edit code themselves.
+- Never explain how code works unless asked.
+- Always give complete files, never diffs or partial snippets, with the exact path each file goes at.
+- Keep it on Supabase free tier + Netlify free tier forever.
+- If something is unclear, make a sensible decision and note it at the top — don't ask questions.
+- **Prefer using existing platform features over building custom layers.** If Supabase or Netlify already provides something, use it instead of writing it.
 
 ---
 
-## Constraints (always)
-
-- Never suggest additional services beyond the tech stack above.
-- Never ask the user to write or edit code themselves.
-- Never explain how code works unless asked.
-- Always give complete files, never diffs or partial snippets.
-- Keep it on Supabase free tier forever.
-- If something is unclear, make a sensible decision and note it at the top — don't ask questions.
+## Current owner email
+`marcokot@icloud.com` — referenced in `sql/002_rls.sql` and as `VITE_ALLOWED_EMAIL` in Netlify env vars. Update both if changing.

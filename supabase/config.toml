@@ -5,6 +5,3 @@ project_id = "gymtracker"
 
 [functions.log-workout]
 verify_jwt = false
-
-[functions.program-editor]
-verify_jwt = false
