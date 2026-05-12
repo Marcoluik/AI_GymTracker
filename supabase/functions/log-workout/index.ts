@@ -170,6 +170,50 @@ async function logFromDefaults(
   return { workout_id: workout.id };
 }
 
+/** Fetch a compact summary of the last logged session of this type (for Claude context). */
+async function fetchLastSessionSummary(
+  supabase: SupabaseClient,
+  type: WorkoutType,
+): Promise<string> {
+  const { data: lastWorkout } = await supabase
+    .from("workouts")
+    .select("id, date")
+    .eq("workout_type", type)
+    .order("date", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!lastWorkout) return "";
+
+  const { data: lastSets } = await supabase
+    .from("sets")
+    .select("exercise_name, weight_kg, reps, set_number, skipped")
+    .eq("workout_id", lastWorkout.id)
+    .order("exercise_name", { ascending: true })
+    .order("set_number", { ascending: true });
+
+  if (!lastSets || lastSets.length === 0) return "";
+
+  const byEx = new Map<string, typeof lastSets>();
+  for (const s of lastSets) {
+    const arr = byEx.get(s.exercise_name) ?? [];
+    arr.push(s);
+    byEx.set(s.exercise_name, arr);
+  }
+
+  const lines = [`Last ${type} session (${lastWorkout.date}):`];
+  for (const [ex, rows] of byEx) {
+    const sets = rows
+      .filter((r) => !r.skipped)
+      .map((r) => {
+        const w = r.weight_kg !== null ? `${r.weight_kg}kg` : "bw";
+        return `${w}×${r.reps ?? "?"}`;
+      })
+      .join(", ");
+    lines.push(`- ${ex}: ${sets}`);
+  }
+  return lines.join("\n");
+}
+
 /** Log a workout by sending the message to Claude for parsing. */
 async function logViaClaude(
   supabase: SupabaseClient,
@@ -185,13 +229,15 @@ async function logViaClaude(
     programText = programRows.map(formatProgramLine).join("\n");
   }
 
+  const lastSession = await fetchLastSessionSummary(supabase, type);
+
   const userMessage = message.trim() || "(no message — normal session)";
   const userPrompt = `Workout type: ${type}
 Date: ${date}
 
 Base program:
 ${programText}
-
+${lastSession ? `\n${lastSession}\n` : ""}
 User's message:
 ${userMessage}`;
 
@@ -401,11 +447,26 @@ Deno.serve(async (req) => {
     console.log(
       `[log-workout] success — workout_id=${main.workout_id}${abs_workout_id ? ` + abs_workout_id=${abs_workout_id}` : ""}`,
     );
+
+    const p = main.parsed as {
+      workout_type?: string;
+      exercises?: { exercise_name: string; sets?: unknown[] }[];
+      notes?: string | null;
+    };
+    const exCount = p?.exercises?.length ?? 0;
+    const setCount = p?.exercises?.reduce((n, e) => n + (e.sets?.length ?? 0), 0) ?? 0;
+    const summary = [
+      `${workout_type.charAt(0).toUpperCase() + workout_type.slice(1)} logged`,
+      exCount > 0 ? `${exCount} exercises · ${setCount} sets` : null,
+      abs_workout_id ? "+ Abs (defaults)" : null,
+      p?.notes ? `Note: ${p.notes}` : null,
+    ].filter(Boolean).join(" · ");
+
     return jsonResponse({
       success: true,
+      summary,
       workout_id: main.workout_id,
       abs_workout_id,
-      parsed: main.parsed,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
