@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 import {
   catalogForType,
@@ -11,11 +11,10 @@ import Toggle from "../components/Toggle";
 import {
   PlusIcon,
   TrashIcon,
-  ChevronUpIcon,
-  ChevronDownIcon,
   ChevronRightIcon,
   SearchIcon,
   CheckIcon,
+  GripIcon,
 } from "../components/icons";
 
 type Row = {
@@ -131,10 +130,7 @@ export default function Program() {
       return;
     }
     const typeRows = rows.filter((r) => r.workout_type === type);
-    const maxOrder = typeRows.reduce(
-      (m, r) => Math.max(m, r.display_order),
-      0,
-    );
+    const maxOrder = typeRows.reduce((m, r) => Math.max(m, r.display_order), 0);
     const { error } = await supabase.from("program").insert({
       workout_type: type,
       exercise_name: trimmed,
@@ -148,41 +144,12 @@ export default function Program() {
     else await load();
   }
 
-  async function moveRow(workoutType: string, rowId: number, direction: -1 | 1) {
-    const list = rows
-      .filter((r) => r.workout_type === workoutType)
-      .sort((a, b) => a.display_order - b.display_order);
-    const i = list.findIndex((r) => r.id === rowId);
-    const j = i + direction;
-    if (i < 0 || j < 0 || j >= list.length) return;
-    const a = list[i];
-    const b = list[j];
-    const staging =
-      Math.max(...rows.map((r) => r.display_order), 0) + 10_000 + a.id;
-    const oa = a.display_order;
-    const ob = b.display_order;
-    const { error: e1 } = await supabase
-      .from("program")
-      .update({ display_order: staging })
-      .eq("id", a.id);
-    if (e1) {
-      alert(e1.message);
-      return;
-    }
-    const { error: e2 } = await supabase
-      .from("program")
-      .update({ display_order: oa })
-      .eq("id", b.id);
-    if (e2) {
-      alert(e2.message);
-      await supabase.from("program").update({ display_order: oa }).eq("id", a.id);
-      return;
-    }
-    const { error: e3 } = await supabase
-      .from("program")
-      .update({ display_order: ob })
-      .eq("id", a.id);
-    if (e3) alert(e3.message);
+  async function reorderSection(ordered: Row[]) {
+    await Promise.all(
+      ordered.map((r, i) =>
+        supabase.from("program").update({ display_order: i + 1 }).eq("id", r.id),
+      ),
+    );
     await load();
   }
 
@@ -224,24 +191,11 @@ export default function Program() {
                   No exercises yet
                 </p>
               ) : (
-                typeRows.map((r) => (
-                  <button
-                    type="button"
-                    key={r.id}
-                    onClick={() => setEditing(r)}
-                    className="w-full flex items-center justify-between gap-3 px-4 py-3.5 text-left border-b border-neutral-800 last:border-b-0 active:bg-neutral-800/80 hover:bg-neutral-800/40 transition-colors"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium text-[15px] truncate">
-                        {labelize(r.exercise_name)}
-                      </div>
-                      <div className="text-xs text-neutral-500 mt-0.5 truncate">
-                        {rowSummary(r)}
-                      </div>
-                    </div>
-                    <ChevronRightIcon className="w-4 h-4 text-neutral-600 shrink-0" />
-                  </button>
-                ))
+                <DraggableList
+                  rows={typeRows}
+                  onReorder={reorderSection}
+                  onTap={setEditing}
+                />
               )}
               <button
                 type="button"
@@ -259,18 +213,12 @@ export default function Program() {
       {editing && (
         <EditSheet
           row={editing}
-          siblings={rows
-            .filter((r) => r.workout_type === editing.workout_type)
-            .sort((a, b) => a.display_order - b.display_order)}
           onClose={() => setEditing(null)}
           onPatch={(patch) => updateRow(editing.id, patch)}
           onDelete={async () => {
             if (!confirm(`Delete "${labelize(editing.exercise_name)}"?`)) return;
             await deleteRow(editing.id);
             setEditing(null);
-          }}
-          onMove={async (dir) => {
-            await moveRow(editing.workout_type, editing.id, dir);
           }}
         />
       )}
@@ -285,6 +233,108 @@ export default function Program() {
         />
       )}
     </div>
+  );
+}
+
+function DraggableList({
+  rows,
+  onReorder,
+  onTap,
+}: {
+  rows: Row[];
+  onReorder: (ordered: Row[]) => Promise<void>;
+  onTap: (row: Row) => void;
+}) {
+  const [items, setItems] = useState(rows);
+  const [draggingId, setDraggingId] = useState<number | null>(null);
+  const itemEls = useRef<Map<number, HTMLDivElement>>(new Map());
+
+  // Sync when prop changes (after DB save)
+  useEffect(() => {
+    setItems(rows);
+  }, [rows]);
+
+  function setRef(id: number, el: HTMLDivElement | null) {
+    if (el) itemEls.current.set(id, el);
+    else itemEls.current.delete(id);
+  }
+
+  function onPointerDown(e: React.PointerEvent<HTMLDivElement>, id: number) {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDraggingId(id);
+  }
+
+  function onPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    if (draggingId === null) return;
+    const currentIdx = items.findIndex((r) => r.id === draggingId);
+    for (const [id, el] of itemEls.current) {
+      if (id === draggingId) continue;
+      const rect = el.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      const targetIdx = items.findIndex((r) => r.id === id);
+      if (
+        (e.clientY < mid && targetIdx < currentIdx) ||
+        (e.clientY > mid && targetIdx > currentIdx)
+      ) {
+        const next = [...items];
+        const [dragged] = next.splice(currentIdx, 1);
+        next.splice(targetIdx, 0, dragged);
+        setItems(next);
+        break;
+      }
+    }
+  }
+
+  function onPointerUp() {
+    if (draggingId === null) return;
+    setDraggingId(null);
+    onReorder(items);
+  }
+
+  return (
+    <>
+      {items.map((r) => {
+        const isDragging = r.id === draggingId;
+        return (
+          <div
+            key={r.id}
+            ref={(el) => setRef(r.id, el)}
+            className={`flex items-center border-b border-neutral-800 last:border-b-0 transition-opacity ${
+              isDragging ? "opacity-40" : "opacity-100"
+            }`}
+          >
+            {/* Drag handle */}
+            <div
+              onPointerDown={(e) => onPointerDown(e, r.id)}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+              onPointerCancel={onPointerUp}
+              className="pl-4 pr-2 py-4 touch-none cursor-grab active:cursor-grabbing text-neutral-600 hover:text-neutral-400 shrink-0"
+            >
+              <GripIcon className="w-4 h-4" />
+            </div>
+
+            {/* Row content — tappable */}
+            <button
+              type="button"
+              onClick={() => !isDragging && onTap(r)}
+              className="flex-1 flex items-center justify-between gap-3 pr-4 py-3.5 text-left"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-[15px] truncate">
+                  {labelize(r.exercise_name)}
+                </div>
+                <div className="text-xs text-neutral-500 mt-0.5 truncate">
+                  {rowSummary(r)}
+                </div>
+              </div>
+              <ChevronRightIcon className="w-4 h-4 text-neutral-600 shrink-0" />
+            </button>
+          </div>
+        );
+      })}
+    </>
   );
 }
 
@@ -324,23 +374,17 @@ function NumberField({
 
 function EditSheet({
   row,
-  siblings,
   onClose,
   onPatch,
   onDelete,
-  onMove,
 }: {
   row: Row;
-  siblings: Row[];
   onClose: () => void;
   onPatch: (patch: Partial<Row>) => Promise<void>;
   onDelete: () => void;
-  onMove: (direction: -1 | 1) => Promise<void>;
 }) {
   const [name, setName] = useState(labelize(row.exercise_name));
-  const [weight, setWeight] = useState<string>(
-    row.default_weight_kg?.toString() ?? "",
-  );
+  const [weight, setWeight] = useState<string>(row.default_weight_kg?.toString() ?? "");
   const [sets, setSets] = useState<string>(row.default_sets?.toString() ?? "");
   const [reps, setReps] = useState<string>(row.default_reps?.toString() ?? "");
   const [bw, setBw] = useState(row.is_bodyweight_base);
@@ -351,61 +395,36 @@ function EditSheet({
     setSets(row.default_sets?.toString() ?? "");
     setReps(row.default_reps?.toString() ?? "");
     setBw(row.is_bodyweight_base);
-  }, [
-    row.id,
-    row.exercise_name,
-    row.default_weight_kg,
-    row.default_sets,
-    row.default_reps,
-    row.is_bodyweight_base,
-  ]);
+  }, [row.id, row.exercise_name, row.default_weight_kg, row.default_sets, row.default_reps, row.is_bodyweight_base]);
 
   function commitName() {
     const normalized = normalize(name) || row.exercise_name;
-    if (normalized !== row.exercise_name) {
-      onPatch({ exercise_name: normalized });
-    }
+    if (normalized !== row.exercise_name) onPatch({ exercise_name: normalized });
   }
   function commitWeight() {
     const next = weight === "" ? null : parseFloat(weight);
-    if (next !== row.default_weight_kg) {
-      onPatch({ default_weight_kg: next });
-    }
+    if (next !== row.default_weight_kg) onPatch({ default_weight_kg: next });
   }
   function commitSets() {
     const next = sets === "" ? null : parseInt(sets, 10);
-    if (next !== row.default_sets) {
-      onPatch({ default_sets: next });
-    }
+    if (next !== row.default_sets) onPatch({ default_sets: next });
   }
   function commitReps() {
     const next = reps === "" ? null : parseInt(reps, 10);
-    if (next !== row.default_reps) {
-      onPatch({ default_reps: next });
-    }
+    if (next !== row.default_reps) onPatch({ default_reps: next });
   }
   function commitBw(next: boolean) {
     setBw(next);
-    if (next !== row.is_bodyweight_base) {
-      onPatch({ is_bodyweight_base: next });
-    }
+    if (next !== row.is_bodyweight_base) onPatch({ is_bodyweight_base: next });
   }
 
-  const suggestions = useMemo(
-    () => filterCatalog(row.workout_type, name, 6),
-    [row.workout_type, name],
-  );
+  const suggestions = useMemo(() => filterCatalog(row.workout_type, name, 6), [row.workout_type, name]);
   const showSuggestions =
     name.trim().length > 0 &&
     !suggestions.some(
-      (s) =>
-        s.label.toLowerCase() === name.trim().toLowerCase() ||
-        s.name === normalize(name),
+      (s) => s.label.toLowerCase() === name.trim().toLowerCase() || s.name === normalize(name),
     );
 
-  const idx = siblings.findIndex((s) => s.id === row.id);
-  const canMoveUp = idx > 0;
-  const canMoveDown = idx >= 0 && idx < siblings.length - 1;
   const timed = isTimedExerciseName(normalize(name));
 
   return (
@@ -431,10 +450,7 @@ function EditSheet({
                   onClick={() => {
                     setName(s.label);
                     commitBw(!!s.bodyweightBase);
-                    onPatch({
-                      exercise_name: s.name,
-                      is_bodyweight_base: !!s.bodyweightBase,
-                    });
+                    onPatch({ exercise_name: s.name, is_bodyweight_base: !!s.bodyweightBase });
                   }}
                   className="text-xs px-2.5 py-1 rounded-full bg-neutral-800 text-neutral-300 hover:bg-neutral-700 active:bg-neutral-600"
                 >
@@ -452,11 +468,7 @@ function EditSheet({
               Pull-ups, dips, planks. Weight below = added load only.
             </div>
           </div>
-          <Toggle
-            checked={bw}
-            onChange={commitBw}
-            ariaLabel="Bodyweight movement"
-          />
+          <Toggle checked={bw} onChange={commitBw} ariaLabel="Bodyweight movement" />
         </label>
 
         <div className="grid grid-cols-3 gap-2">
@@ -486,27 +498,6 @@ function EditSheet({
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-2 pt-1">
-          <button
-            type="button"
-            disabled={!canMoveUp}
-            onClick={() => onMove(-1)}
-            className="flex items-center justify-center gap-1.5 py-3 rounded-lg bg-neutral-800 hover:bg-neutral-700 active:bg-neutral-600 disabled:opacity-30 disabled:cursor-not-allowed text-sm"
-          >
-            <ChevronUpIcon className="w-4 h-4" />
-            Move up
-          </button>
-          <button
-            type="button"
-            disabled={!canMoveDown}
-            onClick={() => onMove(1)}
-            className="flex items-center justify-center gap-1.5 py-3 rounded-lg bg-neutral-800 hover:bg-neutral-700 active:bg-neutral-600 disabled:opacity-30 disabled:cursor-not-allowed text-sm"
-          >
-            <ChevronDownIcon className="w-4 h-4" />
-            Move down
-          </button>
-        </div>
-
         <button
           type="button"
           onClick={onDelete}
@@ -527,13 +518,7 @@ function AddSheet({
 }: {
   type: string;
   onClose: () => void;
-  onAdd: (
-    name: string,
-    weight: string,
-    sets: string,
-    reps: string,
-    bw: boolean,
-  ) => Promise<void>;
+  onAdd: (name: string, weight: string, sets: string, reps: string, bw: boolean) => Promise<void>;
 }) {
   const [display, setDisplay] = useState("");
   const [picked, setPicked] = useState<CatalogExercise | null>(null);
@@ -543,10 +528,7 @@ function AddSheet({
   const [bw, setBw] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  const suggestions = useMemo(
-    () => filterCatalog(type, display, 12),
-    [type, display],
-  );
+  const suggestions = useMemo(() => filterCatalog(type, display, 12), [type, display]);
 
   function pick(s: CatalogExercise) {
     setPicked(s);
@@ -568,13 +550,8 @@ function AddSheet({
     setSubmitting(false);
   }
 
-  const previewLabel = display.trim()
-    ? picked
-      ? picked.label
-      : labelize(normalize(display))
-    : "";
-  const timed =
-    picked?.timed ?? isTimedExerciseName(normalize(display || ""));
+  const previewLabel = display.trim() ? (picked ? picked.label : labelize(normalize(display))) : "";
+  const timed = picked?.timed ?? isTimedExerciseName(normalize(display || ""));
 
   return (
     <Sheet open onClose={onClose} title={`Add to ${TYPE_LABEL[type] ?? type}`}>
@@ -609,9 +586,7 @@ function AddSheet({
                       type="button"
                       onClick={() => pick(s)}
                       className={`w-full text-left flex items-center justify-between gap-2 px-3 py-2.5 border-b border-neutral-800 last:border-b-0 ${
-                        active
-                          ? "bg-emerald-500/15 text-white"
-                          : "hover:bg-neutral-800/60 active:bg-neutral-800"
+                        active ? "bg-emerald-500/15 text-white" : "hover:bg-neutral-800/60 active:bg-neutral-800"
                       }`}
                     >
                       <span className="truncate text-sm">{s.label}</span>
@@ -626,9 +601,7 @@ function AddSheet({
                             BW
                           </span>
                         )}
-                        {active && (
-                          <CheckIcon className="w-4 h-4 text-emerald-400" />
-                        )}
+                        {active && <CheckIcon className="w-4 h-4 text-emerald-400" />}
                       </span>
                     </button>
                   </li>

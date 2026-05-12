@@ -118,3 +118,14 @@ export const CheckIcon = ({ className = "w-4 h-4" }: IconProps) => (
     <polyline points="20 6 9 17 4 12" />
   </Svg>
 );
+
+export const GripIcon = ({ className = "w-4 h-4" }: IconProps) => (
+  <svg viewBox="0 0 10 16" fill="currentColor" className={className} aria-hidden="true">
+    <circle cx="3" cy="4"  r="1.2" />
+    <circle cx="7" cy="4"  r="1.2" />
+    <circle cx="3" cy="8"  r="1.2" />
+    <circle cx="7" cy="8"  r="1.2" />
+    <circle cx="3" cy="12" r="1.2" />
+    <circle cx="7" cy="12" r="1.2" />
+  </svg>
+);
