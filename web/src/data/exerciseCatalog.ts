@@ -5,6 +5,8 @@ export type CatalogExercise = {
   label: string;
   /** When true, picking this sets "bodyweight base" — weight field = added load (belt/plate) */
   bodyweightBase?: boolean;
+  /** When true, the rep count represents seconds held (planks, hollow holds). UI displays "60s" rather than "× 60". */
+  timed?: boolean;
 };
 
 const chest: CatalogExercise[] = [
@@ -59,10 +61,30 @@ const legs: CatalogExercise[] = [
   { name: "seated_calf_raises", label: "Seated calf raise" },
 ];
 
+const abs: CatalogExercise[] = [
+  { name: "plank", label: "Plank", bodyweightBase: true, timed: true },
+  { name: "side_plank", label: "Side plank", bodyweightBase: true, timed: true },
+  { name: "hollow_hold", label: "Hollow body hold", bodyweightBase: true, timed: true },
+  { name: "hanging_leg_raises", label: "Hanging leg raises", bodyweightBase: true },
+  { name: "hanging_knee_raises", label: "Hanging knee raises", bodyweightBase: true },
+  { name: "lying_leg_raises", label: "Lying leg raises", bodyweightBase: true },
+  { name: "crunches", label: "Crunches", bodyweightBase: true },
+  { name: "cable_crunch", label: "Cable crunch" },
+  { name: "decline_sit_up", label: "Decline sit-up", bodyweightBase: true },
+  { name: "ab_rollout", label: "Ab rollout", bodyweightBase: true },
+  { name: "russian_twist", label: "Russian twist" },
+  { name: "bicycle_crunch", label: "Bicycle crunch", bodyweightBase: true },
+  { name: "dead_bug", label: "Dead bug", bodyweightBase: true },
+  { name: "mountain_climbers", label: "Mountain climbers", bodyweightBase: true },
+  { name: "v_up", label: "V-up", bodyweightBase: true },
+  { name: "toes_to_bar", label: "Toes to bar", bodyweightBase: true },
+];
+
 export const EXERCISE_CATALOG: Record<string, CatalogExercise[]> = {
   chest,
   back,
   legs,
+  abs,
 };
 
 export function catalogForType(workoutType: string): CatalogExercise[] {
@@ -84,4 +106,8 @@ export function filterCatalog(
         e.label.toLowerCase().includes(q),
     )
     .slice(0, limit);
+}
+
+export function isTimedExerciseName(name: string): boolean {
+  return /plank|hold/i.test(name);
 }

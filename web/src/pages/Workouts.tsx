@@ -16,6 +16,7 @@ const TYPE_STYLES: Record<string, string> = {
   chest: "bg-sky-500/15 text-sky-300 ring-1 ring-inset ring-sky-500/30",
   back: "bg-violet-500/15 text-violet-300 ring-1 ring-inset ring-violet-500/30",
   legs: "bg-emerald-500/15 text-emerald-300 ring-1 ring-inset ring-emerald-500/30",
+  abs: "bg-rose-500/15 text-rose-300 ring-1 ring-inset ring-rose-500/30",
   run: "bg-orange-500/15 text-orange-300 ring-1 ring-inset ring-orange-500/30",
 };
 

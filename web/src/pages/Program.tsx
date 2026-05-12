@@ -3,6 +3,7 @@ import { supabase } from "../lib/supabase";
 import {
   catalogForType,
   filterCatalog,
+  isTimedExerciseName,
   type CatalogExercise,
 } from "../data/exerciseCatalog";
 import Sheet from "../components/Sheet";
@@ -22,6 +23,8 @@ type Row = {
   workout_type: string;
   exercise_name: string;
   default_weight_kg: number | null;
+  default_sets: number | null;
+  default_reps: number | null;
   display_order: number;
   is_bodyweight_base: boolean;
 };
@@ -30,11 +33,12 @@ type ProgramFromDb = Omit<Row, "is_bodyweight_base"> & {
   is_bodyweight_base?: boolean | null;
 };
 
-const TYPES = ["chest", "back", "legs"] as const;
+const TYPES = ["chest", "back", "legs", "abs"] as const;
 const TYPE_LABEL: Record<string, string> = {
   chest: "Chest",
   back: "Back",
   legs: "Legs",
+  abs: "Abs",
 };
 
 function labelize(name: string) {
@@ -50,14 +54,25 @@ function normalize(value: string): string {
     .replace(/[^a-z0-9_]/g, "");
 }
 
-function weightSummary(row: Row): string {
+function repsLabel(name: string, reps: number | null): string {
+  if (reps === null || reps === undefined) return "—";
+  return isTimedExerciseName(name) ? `${reps}s` : `${reps} reps`;
+}
+
+function rowSummary(row: Row): string {
+  const parts: string[] = [];
+  if (row.default_sets) parts.push(`${row.default_sets} sets`);
+  parts.push(repsLabel(row.exercise_name, row.default_reps));
   if (row.is_bodyweight_base) {
-    if (row.default_weight_kg && row.default_weight_kg > 0) {
-      return `Bodyweight + ${row.default_weight_kg} kg`;
-    }
-    return "Bodyweight";
+    parts.push(
+      row.default_weight_kg && row.default_weight_kg > 0
+        ? `BW + ${row.default_weight_kg} kg`
+        : "BW",
+    );
+  } else if (row.default_weight_kg !== null) {
+    parts.push(`${row.default_weight_kg} kg`);
   }
-  return row.default_weight_kg !== null ? `${row.default_weight_kg} kg` : "—";
+  return parts.join(" · ");
 }
 
 export default function Program() {
@@ -106,6 +121,8 @@ export default function Program() {
     type: string,
     name: string,
     weight: string,
+    sets: string,
+    reps: string,
     isBodyweightBase: boolean,
   ) {
     const trimmed = normalize(name);
@@ -122,6 +139,8 @@ export default function Program() {
       workout_type: type,
       exercise_name: trimmed,
       default_weight_kg: weight === "" ? null : parseFloat(weight),
+      default_sets: sets === "" ? null : parseInt(sets, 10),
+      default_reps: reps === "" ? null : parseInt(reps, 10),
       display_order: maxOrder + 1,
       is_bodyweight_base: isBodyweightBase,
     });
@@ -170,7 +189,7 @@ export default function Program() {
   if (loading)
     return (
       <div className="space-y-4">
-        {[0, 1, 2].map((i) => (
+        {[0, 1, 2, 3].map((i) => (
           <div
             key={i}
             className="h-32 rounded-2xl bg-neutral-900/60 border border-neutral-900 animate-pulse"
@@ -216,13 +235,8 @@ export default function Program() {
                       <div className="font-medium text-[15px] truncate">
                         {labelize(r.exercise_name)}
                       </div>
-                      <div className="text-xs text-neutral-500 mt-0.5 flex items-center gap-1.5">
-                        {r.is_bodyweight_base && (
-                          <span className="inline-block px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider font-semibold bg-neutral-800 text-neutral-300">
-                            BW
-                          </span>
-                        )}
-                        <span>{weightSummary(r)}</span>
+                      <div className="text-xs text-neutral-500 mt-0.5 truncate">
+                        {rowSummary(r)}
                       </div>
                     </div>
                     <ChevronRightIcon className="w-4 h-4 text-neutral-600 shrink-0" />
@@ -264,12 +278,46 @@ export default function Program() {
         <AddSheet
           type={addingType}
           onClose={() => setAddingType(null)}
-          onAdd={async (name, weight, bw) => {
-            await addRow(addingType, name, weight, bw);
+          onAdd={async (name, weight, sets, reps, bw) => {
+            await addRow(addingType, name, weight, sets, reps, bw);
             setAddingType(null);
           }}
         />
       )}
+    </div>
+  );
+}
+
+function NumberField({
+  label,
+  value,
+  onChange,
+  onBlur,
+  placeholder,
+  step,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  onBlur?: () => void;
+  placeholder?: string;
+  step?: string;
+}) {
+  return (
+    <div>
+      <label className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold block mb-1.5">
+        {label}
+      </label>
+      <input
+        type="number"
+        inputMode="decimal"
+        step={step}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlur}
+        placeholder={placeholder}
+        className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-base text-center focus:outline-none focus:ring-2 focus:ring-neutral-600 placeholder-neutral-500"
+      />
     </div>
   );
 }
@@ -293,13 +341,24 @@ function EditSheet({
   const [weight, setWeight] = useState<string>(
     row.default_weight_kg?.toString() ?? "",
   );
+  const [sets, setSets] = useState<string>(row.default_sets?.toString() ?? "");
+  const [reps, setReps] = useState<string>(row.default_reps?.toString() ?? "");
   const [bw, setBw] = useState(row.is_bodyweight_base);
 
   useEffect(() => {
     setName(labelize(row.exercise_name));
     setWeight(row.default_weight_kg?.toString() ?? "");
+    setSets(row.default_sets?.toString() ?? "");
+    setReps(row.default_reps?.toString() ?? "");
     setBw(row.is_bodyweight_base);
-  }, [row.id, row.exercise_name, row.default_weight_kg, row.is_bodyweight_base]);
+  }, [
+    row.id,
+    row.exercise_name,
+    row.default_weight_kg,
+    row.default_sets,
+    row.default_reps,
+    row.is_bodyweight_base,
+  ]);
 
   function commitName() {
     const normalized = normalize(name) || row.exercise_name;
@@ -311,6 +370,18 @@ function EditSheet({
     const next = weight === "" ? null : parseFloat(weight);
     if (next !== row.default_weight_kg) {
       onPatch({ default_weight_kg: next });
+    }
+  }
+  function commitSets() {
+    const next = sets === "" ? null : parseInt(sets, 10);
+    if (next !== row.default_sets) {
+      onPatch({ default_sets: next });
+    }
+  }
+  function commitReps() {
+    const next = reps === "" ? null : parseInt(reps, 10);
+    if (next !== row.default_reps) {
+      onPatch({ default_reps: next });
     }
   }
   function commitBw(next: boolean) {
@@ -335,6 +406,7 @@ function EditSheet({
   const idx = siblings.findIndex((s) => s.id === row.id);
   const canMoveUp = idx > 0;
   const canMoveDown = idx >= 0 && idx < siblings.length - 1;
+  const timed = isTimedExerciseName(normalize(name));
 
   return (
     <Sheet open onClose={onClose} title="Edit exercise">
@@ -377,7 +449,7 @@ function EditSheet({
           <div className="min-w-0">
             <div className="text-sm font-medium">Bodyweight movement</div>
             <div className="text-xs text-neutral-500 mt-0.5">
-              Pull-ups, dips, push-ups. Weight below = added load only.
+              Pull-ups, dips, planks. Weight below = added load only.
             </div>
           </div>
           <Toggle
@@ -387,19 +459,30 @@ function EditSheet({
           />
         </label>
 
-        <div>
-          <label className="text-[11px] uppercase tracking-wider text-neutral-400 font-semibold block mb-2">
-            {bw ? "Added weight (kg)" : "Weight (kg)"}
-          </label>
-          <input
-            type="number"
-            inputMode="decimal"
-            step="0.5"
+        <div className="grid grid-cols-3 gap-2">
+          <NumberField
+            label={bw ? "Added kg" : "kg"}
             value={weight}
-            onChange={(e) => setWeight(e.target.value)}
+            onChange={setWeight}
             onBlur={commitWeight}
-            placeholder={bw ? "0 = bodyweight only" : "kg"}
-            className="w-full bg-neutral-800 rounded-lg px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-neutral-600 placeholder-neutral-500"
+            step="0.5"
+            placeholder={bw ? "0" : "kg"}
+          />
+          <NumberField
+            label="Sets"
+            value={sets}
+            onChange={setSets}
+            onBlur={commitSets}
+            step="1"
+            placeholder="3"
+          />
+          <NumberField
+            label={timed ? "Seconds" : "Reps"}
+            value={reps}
+            onChange={setReps}
+            onBlur={commitReps}
+            step="1"
+            placeholder={timed ? "60" : "8"}
           />
         </div>
 
@@ -444,11 +527,19 @@ function AddSheet({
 }: {
   type: string;
   onClose: () => void;
-  onAdd: (name: string, weight: string, bw: boolean) => Promise<void>;
+  onAdd: (
+    name: string,
+    weight: string,
+    sets: string,
+    reps: string,
+    bw: boolean,
+  ) => Promise<void>;
 }) {
   const [display, setDisplay] = useState("");
   const [picked, setPicked] = useState<CatalogExercise | null>(null);
   const [weight, setWeight] = useState("");
+  const [sets, setSets] = useState("3");
+  const [reps, setReps] = useState("8");
   const [bw, setBw] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -461,6 +552,7 @@ function AddSheet({
     setPicked(s);
     setDisplay(s.label);
     setBw(!!s.bodyweightBase);
+    if (s.timed) setReps((r) => (r === "8" ? "60" : r));
   }
 
   function onDisplayChange(value: string) {
@@ -472,7 +564,7 @@ function AddSheet({
     if (!display.trim() || submitting) return;
     setSubmitting(true);
     const name = picked ? picked.name : normalize(display);
-    await onAdd(name, weight, bw);
+    await onAdd(name, weight, sets, reps, bw);
     setSubmitting(false);
   }
 
@@ -481,6 +573,8 @@ function AddSheet({
       ? picked.label
       : labelize(normalize(display))
     : "";
+  const timed =
+    picked?.timed ?? isTimedExerciseName(normalize(display || ""));
 
   return (
     <Sheet open onClose={onClose} title={`Add to ${TYPE_LABEL[type] ?? type}`}>
@@ -522,7 +616,12 @@ function AddSheet({
                     >
                       <span className="truncate text-sm">{s.label}</span>
                       <span className="flex items-center gap-2 shrink-0">
-                        {s.bodyweightBase && (
+                        {s.timed && (
+                          <span className="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-300">
+                            Timed
+                          </span>
+                        )}
+                        {s.bodyweightBase && !s.timed && (
                           <span className="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-300">
                             BW
                           </span>
@@ -549,18 +648,27 @@ function AddSheet({
           <Toggle checked={bw} onChange={setBw} ariaLabel="Bodyweight movement" />
         </label>
 
-        <div>
-          <label className="text-[11px] uppercase tracking-wider text-neutral-400 font-semibold block mb-2">
-            {bw ? "Added weight (kg)" : "Weight (kg)"}
-          </label>
-          <input
-            type="number"
-            inputMode="decimal"
-            step="0.5"
+        <div className="grid grid-cols-3 gap-2">
+          <NumberField
+            label={bw ? "Added kg" : "kg"}
             value={weight}
-            onChange={(e) => setWeight(e.target.value)}
-            placeholder={bw ? "Leave blank for bodyweight only" : "e.g. 80"}
-            className="w-full bg-neutral-800 rounded-lg px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-neutral-600 placeholder-neutral-500"
+            onChange={setWeight}
+            step="0.5"
+            placeholder={bw ? "0" : "kg"}
+          />
+          <NumberField
+            label="Sets"
+            value={sets}
+            onChange={setSets}
+            step="1"
+            placeholder="3"
+          />
+          <NumberField
+            label={timed ? "Seconds" : "Reps"}
+            value={reps}
+            onChange={setReps}
+            step="1"
+            placeholder={timed ? "60" : "8"}
           />
         </div>
 

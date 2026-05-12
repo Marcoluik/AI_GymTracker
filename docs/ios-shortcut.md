@@ -1,6 +1,6 @@
 # iOS Shortcut — "Log Workout"
 
-This shortcut shows a menu, asks for a note, sends everything to your edge function.
+This shortcut shows a menu, asks for a note, asks whether you also did abs, then sends everything to your edge function.
 
 You will need this URL ready (you'll get it from the deployment step):
 ```
@@ -27,6 +27,8 @@ Then add the actions below in this exact order. Tap **+ Add Action** between eac
 
 You'll now see four sub-branches: **chest**, **back**, **legs**, **run**, each with an empty body.
 
+> Note: there is **no "abs" button** — abs is asked as a yes/no question after the main workout (see Action 5). If you want to log abs by itself, just pick any branch and answer "yes" with no message, or add a 5th `abs` menu item if you prefer a standalone button.
+
 ### Actions 2 + 3 (×4) — inside each menu branch
 Inside each of the four branches, add **two** actions:
 
@@ -48,24 +50,37 @@ Inside each of the four branches, add **two** actions:
 - Variable Name: `note`
 - Input: the magic variable **Provided Input** (auto-fills).
 
-### Action 6 — Format Date
+### Action 6 — Ask for Input (the new "Abs?" prompt)
+- Search: **Ask for Input**
+- Input Type: **Text**
+- Prompt: `Abs too? (y/n)`
+- Default Answer: `n`
+
+### Action 7 — Set Variable
+- Variable Name: `absFlag`
+- Input: the magic variable **Provided Input** (auto-fills).
+
+(The edge function accepts `y`, `yes`, `true`, `1` — anything else is treated as no.)
+
+### Action 8 — Format Date
 - Search: **Format Date**
 - Date: tap the field → choose **Current Date**
 - Format: tap **Date Format** → **Custom**
 - Custom Format String: `yyyy-MM-dd`
 
-### Action 7 — Set Variable
+### Action 9 — Set Variable
 - Variable Name: `today`
 - Input: the magic variable **Formatted Date** (auto-fills).
 
-### Action 8 — Dictionary
+### Action 10 — Dictionary
 - Search: **Dictionary**
-- Tap **Add new item** three times:
+- Tap **Add new item** four times:
   1. Key: `workout_type` — Type: **Text** — Value: variable `workoutType`
   2. Key: `message` — Type: **Text** — Value: variable `note`
   3. Key: `date` — Type: **Text** — Value: variable `today`
+  4. Key: `also_abs` — Type: **Text** — Value: variable `absFlag`
 
-### Action 9 — Get Contents of URL
+### Action 11 — Get Contents of URL
 - Search: **Get Contents of URL**
 - URL: paste your function URL: `https://YOUR-PROJECT-REF.supabase.co/functions/v1/log-workout`
 - Tap **Show More**:
@@ -73,15 +88,19 @@ Inside each of the four branches, add **two** actions:
   - Request Body: **JSON**
   - Headers: tap **Add new header** once:
     - `Content-Type` → `application/json`
-  - **JSON Body**: tap **Add new field**, set type to **Dictionary**, tap value → pick the **Dictionary** variable from Action 8.
-    (Or simpler: drop the **Dictionary** variable in as the whole body — Shortcuts will accept it.)
+  - **JSON Body**: drop the **Dictionary** variable from Action 10 in as the whole body.
 
-### Action 10 (recommended) — Show Notification
+### Action 12 (recommended) — Show Notification
 - Search: **Show Notification**
 - Title: `Workout logged`
 - Body: tap field → pick **Contents of URL** (this shows the function's response so you can confirm it worked)
 
 ---
+
+## What happens when you answer "yes" to abs
+- The edge function logs the main workout (Claude parses your message).
+- It then logs a **second workout** of type `abs` for the same date, expanding your Abs program straight from the defaults (no AI call — fast and free).
+- If you need to log abs with deviations (e.g. PR'd a plank), say `n` to the abs prompt and run the shortcut a second time with the workout type set to `abs` (you can add a 5th `abs` button to Action 1 if you want a standalone option).
 
 ## Add to Home Screen
 1. Open the shortcut → tap the small **(i)** info button at the bottom.
@@ -95,4 +114,4 @@ Inside each of the four branches, add **two** actions:
 
 If the notification shows `{"success":false,"error":"..."}`, that error message tells you exactly what went wrong. Paste it back to Claude (with `gymtracker_spec.md`) for a fix.
 
-If you don't see a notification at all, the URL is wrong — re-check Action 9.
+If you don't see a notification at all, the URL is wrong — re-check Action 11.

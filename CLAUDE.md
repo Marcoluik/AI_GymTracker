@@ -10,6 +10,14 @@ Single-user personal gym tracker. Marco logs workouts via iOS Shortcut → Supab
 - **Netlify**: site `mkgymai` → `https://mkgymai.netlify.app` — auto-deploys on push
 - **Frontend**: Vite + React + TypeScript + Tailwind + Recharts (in `/web`)
 
+## Workout types
+`chest`, `back`, `legs`, `abs`, `run`. Each has a program section in the web app. The iOS Shortcut menu only offers chest/back/legs/run — abs is asked as a `also_abs: y/n` prompt after the main workout. When `also_abs=true` the edge function logs the main workout via Claude AND inserts a second abs workout straight from program defaults (no AI call).
+
+## Sets + reps model
+- `sets` is per-set, not per-exercise (3 sets of bench = 3 rows). Columns: `weight_kg`, `reps`, `set_number`, `skipped`, `is_deviation`.
+- `program` rows have `default_sets` and `default_reps`. Claude expands a "normal" session into N sets at the defaults.
+- For timed exercises (name matches `plank|hold`), `reps` represents seconds. UI detects this and renders `60s` instead of `× 60`.
+
 ## Owner
 - Email: `marcokot@icloud.com`
 - This email appears in TWO places: the SQL RLS policy AND the `VITE_ALLOWED_EMAIL` Netlify env var. Update both if it ever changes.

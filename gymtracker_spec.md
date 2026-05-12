@@ -8,10 +8,10 @@ Paste this entire file to Claude when you want to change anything. Claude will p
 
 Two interfaces, one Supabase database:
 
-1. **iOS Shortcut** — after every workout, pick chest/back/legs/run, optionally type what was different. POSTed to a Supabase edge function which calls Claude to parse it and write rows to the DB.
+1. **iOS Shortcut** — after every workout, pick chest/back/legs/run, optionally type what was different, then answer a `Abs too? (y/n)` yes/no prompt. POSTed to a Supabase edge function which calls Claude to parse the main workout. If `also_abs:true` the edge function ALSO logs an abs workout for that date by expanding the Abs program defaults (no Claude call). Single HTTP call, one or two `workouts` rows.
 2. **Web app on Netlify** — for editing the base program, browsing past workouts, and viewing trends. Auth via Supabase magic-link email (locked to one email).
 
-Single-user. All sets are to failure so reps are never tracked.
+Single-user. Per-set weight AND reps are tracked. The base program prescribes default sets × default reps × default weight per exercise; Claude expands these on a normal session and only deviates when the user reports something different. For timed exercises (planks, holds) reps store seconds.
 
 ---
 
@@ -49,27 +49,32 @@ The web app talks directly to Supabase via `@supabase/supabase-js` using the ano
 
 **Table: program**
 - `id` (int, PK)
-- `workout_type` (text) — "chest", "back", "legs"
+- `workout_type` (text) — "chest", "back", "legs", "abs"
 - `exercise_name` (text, snake_case)
 - `default_weight_kg` (float, nullable — NULL = bodyweight)
+- `default_sets` (int, nullable)
+- `default_reps` (int, nullable — seconds for timed exercises)
+- `is_bodyweight_base` (bool) — true for pull-ups, dips, planks etc.; `default_weight_kg` is then ADDED load
 - `display_order` (int)
 - UNIQUE (workout_type, exercise_name)
 
 **Table: workouts**
 - `id` (uuid, PK, auto)
 - `date` (date)
-- `workout_type` (text)
+- `workout_type` (text) — "chest", "back", "legs", "abs", "run"
 - `raw_message` (text) — what was typed verbatim
 - `notes` (text) — freeform notes Claude extracted
 - `created_at` (timestamptz, auto)
 
-**Table: sets**
+**Table: sets** (one row per set, not per exercise)
 - `id` (uuid, PK, auto)
 - `workout_id` (uuid, FK → workouts.id, ON DELETE CASCADE)
 - `exercise_name` (text)
 - `weight_kg` (float, nullable)
+- `reps` (int, nullable — seconds for timed exercises like planks)
+- `set_number` (int, nullable — 1-indexed within the exercise)
 - `skipped` (bool, default false)
-- `is_deviation` (bool) — true if different from base program
+- `is_deviation` (bool) — true if this set differs from program defaults
 - `created_at` (timestamptz, auto)
 
 **Table: runs**
@@ -85,35 +90,14 @@ RLS: all four tables have a single `FOR ALL TO authenticated` policy gated on `a
 
 ## Claude parsing prompt (inside log-workout edge function)
 
-**SYSTEM:**
-```
-You are a gym workout logging assistant. Return ONLY raw JSON. No text, no markdown, no code fences. Ever.
+See `supabase/functions/log-workout/index.ts` for the live prompt. Summary:
 
-The user trains 6 days a week. All sets are to failure — never log reps unless explicitly stated. You are given the base program and the user's message. Log what actually happened.
-
-RULES:
-- No message or "normal" = log all base program weights unchanged
-- Different weight mentioned = use that weight, mark is_deviation true
-- Exercise skipped = weight_kg null, skipped true
-- New exercise not in base program = add it, is_deviation true
-- Notes, feelings, observations = put in notes field
-- For runs: extract duration and/or distance if mentioned
-- Anything ambiguous = put verbatim in notes, do not guess
-- Always return every exercise from the base program, even if unchanged
-
-OUTPUT FORMAT:
-{
-  "workout_type": "chest",
-  "date": "YYYY-MM-DD",
-  "notes": "felt strong, shoulder a bit tight" or null,
-  "exercises": [
-    { "exercise_name": "incline_chest_press", "weight_kg": 30, "skipped": false, "is_deviation": true }
-  ],
-  "run": { "duration_minutes": 35, "distance_km": 5.2 }
-}
-
-Include "exercises" for chest/back/legs. Include "run" only for workout_type "run". is_deviation is true only if weight differs from base program or exercise was added/skipped.
-```
+- Output is a JSON object with `workout_type`, `date`, `notes`, `exercises[]`, and optionally `run`.
+- Each `exercises[]` item has a `sets[]` array. Each set is `{ weight_kg, reps, skipped, is_deviation }`.
+- Default behavior on a "normal" session: expand each program exercise into `default_sets` sets at `default_weight_kg` × `default_reps`.
+- Per-set logging is supported: user says "bench 80×8, 80×8, 80×6" → 3 set rows with the last marked deviation.
+- Timed exercises (anything with "plank" or "hold" in the name): `reps` stores seconds, not rep count.
+- Bodyweight exercises with added load: `weight_kg` is the EXTRA load only.
 
 ---
 

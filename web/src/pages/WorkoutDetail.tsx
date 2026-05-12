@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { ChevronLeftIcon } from "../components/icons";
+import { isTimedExerciseName } from "../data/exerciseCatalog";
 
 type Workout = {
   id: string;
@@ -14,6 +15,8 @@ type SetRow = {
   id: string;
   exercise_name: string;
   weight_kg: number | null;
+  reps: number | null;
+  set_number: number | null;
   skipped: boolean;
   is_deviation: boolean;
 };
@@ -27,6 +30,7 @@ const TYPE_STYLES: Record<string, string> = {
   chest: "bg-sky-500/15 text-sky-300 ring-1 ring-inset ring-sky-500/30",
   back: "bg-violet-500/15 text-violet-300 ring-1 ring-inset ring-violet-500/30",
   legs: "bg-emerald-500/15 text-emerald-300 ring-1 ring-inset ring-emerald-500/30",
+  abs: "bg-rose-500/15 text-rose-300 ring-1 ring-inset ring-rose-500/30",
   run: "bg-orange-500/15 text-orange-300 ring-1 ring-inset ring-orange-500/30",
 };
 
@@ -45,6 +49,20 @@ function formatFullDate(dateStr: string): string {
   });
 }
 
+function formatSet(s: SetRow): string {
+  if (s.skipped) return "skipped";
+  const timed = isTimedExerciseName(s.exercise_name);
+  const parts: string[] = [];
+  if (s.weight_kg !== null && s.weight_kg !== 0) parts.push(`${s.weight_kg} kg`);
+  if (s.reps !== null) {
+    if (timed) parts.push(`${s.reps}s`);
+    else if (parts.length > 0) parts.push(`× ${s.reps}`);
+    else parts.push(`${s.reps} reps`);
+  }
+  if (parts.length === 0) return s.weight_kg === 0 ? "bw" : "—";
+  return parts.join(" ");
+}
+
 export default function WorkoutDetail() {
   const { id } = useParams();
   const [workout, setWorkout] = useState<Workout | null>(null);
@@ -59,7 +77,12 @@ export default function WorkoutDetail() {
       const [{ data: w, error: we }, { data: s }, { data: r }] =
         await Promise.all([
           supabase.from("workouts").select("*").eq("id", id).single(),
-          supabase.from("sets").select("*").eq("workout_id", id),
+          supabase
+            .from("sets")
+            .select("*")
+            .eq("workout_id", id)
+            .order("set_number", { ascending: true, nullsFirst: true })
+            .order("created_at", { ascending: true }),
           supabase
             .from("runs")
             .select("*")
@@ -76,6 +99,16 @@ export default function WorkoutDetail() {
     })();
   }, [id]);
 
+  const grouped = useMemo(() => {
+    const map = new Map<string, SetRow[]>();
+    for (const s of sets) {
+      const list = map.get(s.exercise_name) ?? [];
+      list.push(s);
+      map.set(s.exercise_name, list);
+    }
+    return Array.from(map.entries()).map(([name, rows]) => ({ name, rows }));
+  }, [sets]);
+
   if (loading)
     return (
       <div className="space-y-3">
@@ -89,6 +122,12 @@ export default function WorkoutDetail() {
 
   const deviationCount = sets.filter((s) => s.is_deviation).length;
   const skippedCount = sets.filter((s) => s.skipped).length;
+  const totalVolume = sets.reduce((sum, s) => {
+    if (s.skipped) return sum;
+    const w = s.weight_kg ?? 0;
+    const r = s.reps ?? 0;
+    return sum + w * r;
+  }, 0);
 
   return (
     <div className="pb-4 space-y-4">
@@ -100,34 +139,31 @@ export default function WorkoutDetail() {
         All workouts
       </Link>
 
-      <header className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <span
-            className={`inline-block text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded-full ${
-              TYPE_STYLES[workout.workout_type] ??
-              "bg-neutral-800 text-neutral-400"
-            }`}
-          >
-            {workout.workout_type}
-          </span>
-          <h2 className="text-xl font-semibold mt-2">
-            {formatFullDate(workout.date)}
-          </h2>
-        </div>
+      <header>
+        <span
+          className={`inline-block text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded-full ${
+            TYPE_STYLES[workout.workout_type] ?? "bg-neutral-800 text-neutral-400"
+          }`}
+        >
+          {workout.workout_type}
+        </span>
+        <h2 className="text-xl font-semibold mt-2">
+          {formatFullDate(workout.date)}
+        </h2>
       </header>
 
-      {(deviationCount > 0 || skippedCount > 0) && (
-        <div className="flex gap-2 text-xs">
-          {deviationCount > 0 && (
-            <span className="px-2 py-1 rounded-md bg-yellow-500/10 text-yellow-300 ring-1 ring-inset ring-yellow-500/30">
-              {deviationCount} deviation{deviationCount === 1 ? "" : "s"}
-            </span>
-          )}
-          {skippedCount > 0 && (
-            <span className="px-2 py-1 rounded-md bg-neutral-800 text-neutral-400 ring-1 ring-inset ring-neutral-700">
-              {skippedCount} skipped
-            </span>
-          )}
+      {(sets.length > 0 || deviationCount > 0 || skippedCount > 0) && (
+        <div className="grid grid-cols-3 gap-2">
+          <StatTile label="Sets" value={String(sets.length - skippedCount)} />
+          <StatTile
+            label="Deviations"
+            value={String(deviationCount)}
+            tone={deviationCount > 0 ? "warning" : "neutral"}
+          />
+          <StatTile
+            label="Volume"
+            value={totalVolume > 0 ? `${Math.round(totalVolume)} kg` : "—"}
+          />
         </div>
       )}
 
@@ -138,57 +174,87 @@ export default function WorkoutDetail() {
 
       {workout.workout_type === "run" && run && (
         <div className="grid grid-cols-2 gap-2">
-          <StatCard label="Duration">
-            {run.duration_minutes ? `${run.duration_minutes} min` : "—"}
-          </StatCard>
-          <StatCard label="Distance">
-            {run.distance_km ? `${run.distance_km} km` : "—"}
-          </StatCard>
+          <StatTile
+            label="Duration"
+            value={run.duration_minutes ? `${run.duration_minutes} min` : "—"}
+          />
+          <StatTile
+            label="Distance"
+            value={run.distance_km ? `${run.distance_km} km` : "—"}
+          />
         </div>
       )}
 
-      {sets.length > 0 && (
+      {grouped.length > 0 && (
         <section>
           <h3 className="text-[11px] uppercase tracking-[0.12em] font-semibold text-neutral-400 px-1 mb-2">
-            Sets
+            Exercises
           </h3>
-          <div className="rounded-2xl overflow-hidden bg-neutral-900 border border-neutral-800">
-            {sets.map((s) => (
-              <div
-                key={s.id}
-                className={`flex justify-between items-center px-4 py-3 border-b border-neutral-800 last:border-b-0 ${
-                  s.is_deviation ? "bg-yellow-500/5" : ""
-                }`}
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span
-                    className={`text-sm truncate ${
-                      s.skipped
-                        ? "text-neutral-500 line-through"
-                        : "text-neutral-100"
-                    }`}
-                  >
-                    {labelize(s.exercise_name)}
-                  </span>
-                  {s.is_deviation && (
-                    <span className="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-300 shrink-0">
-                      Deviation
-                    </span>
-                  )}
-                </div>
-                <span
-                  className={`text-sm shrink-0 ${
-                    s.skipped ? "text-neutral-600" : "text-neutral-300"
+          <div className="space-y-2">
+            {grouped.map(({ name, rows }) => {
+              const allSkipped = rows.every((r) => r.skipped);
+              const anyDeviation = rows.some((r) => r.is_deviation);
+              const done = rows.filter((r) => !r.skipped).length;
+              return (
+                <div
+                  key={name}
+                  className={`rounded-2xl overflow-hidden border ${
+                    anyDeviation
+                      ? "border-yellow-500/30 bg-yellow-500/5"
+                      : "border-neutral-800 bg-neutral-900"
                   }`}
                 >
-                  {s.skipped
-                    ? "skipped"
-                    : s.weight_kg !== null
-                      ? `${s.weight_kg} kg`
-                      : "bw"}
-                </span>
-              </div>
-            ))}
+                  <div className="flex items-center justify-between px-4 pt-3 pb-2">
+                    <div className="min-w-0 flex-1">
+                      <div
+                        className={`font-medium ${
+                          allSkipped
+                            ? "text-neutral-500 line-through"
+                            : "text-neutral-100"
+                        }`}
+                      >
+                        {labelize(name)}
+                      </div>
+                      <div className="text-[11px] text-neutral-500 mt-0.5">
+                        {allSkipped
+                          ? "All skipped"
+                          : `${done} ${done === 1 ? "set" : "sets"}`}
+                      </div>
+                    </div>
+                    {anyDeviation && (
+                      <span className="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-300 shrink-0">
+                        Deviation
+                      </span>
+                    )}
+                  </div>
+                  <ul className="divide-y divide-neutral-800/70">
+                    {rows.map((r, i) => (
+                      <li
+                        key={r.id}
+                        className={`flex items-center justify-between px-4 py-2 text-sm ${
+                          r.skipped ? "opacity-60" : ""
+                        }`}
+                      >
+                        <span className="text-neutral-500 text-xs w-12">
+                          Set {r.set_number ?? i + 1}
+                        </span>
+                        <span
+                          className={
+                            r.is_deviation
+                              ? "text-yellow-300 font-medium"
+                              : r.skipped
+                                ? "text-neutral-500 line-through"
+                                : "text-neutral-100"
+                          }
+                        >
+                          {formatSet(r)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
           </div>
         </section>
       )}
@@ -213,19 +279,33 @@ function Box({
   );
 }
 
-function StatCard({
+function StatTile({
   label,
-  children,
+  value,
+  tone = "neutral",
 }: {
   label: string;
-  children: React.ReactNode;
+  value: string;
+  tone?: "neutral" | "warning";
 }) {
   return (
-    <div className="p-3 rounded-xl bg-neutral-900 border border-neutral-800">
-      <p className="text-[11px] uppercase tracking-wider font-semibold text-neutral-500 mb-1">
+    <div
+      className={`p-3 rounded-xl border ${
+        tone === "warning"
+          ? "border-yellow-500/30 bg-yellow-500/5"
+          : "border-neutral-800 bg-neutral-900"
+      }`}
+    >
+      <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 mb-1">
         {label}
       </p>
-      <p className="text-lg font-semibold">{children}</p>
+      <p
+        className={`text-lg font-semibold ${
+          tone === "warning" ? "text-yellow-300" : ""
+        }`}
+      >
+        {value}
+      </p>
     </div>
   );
 }
