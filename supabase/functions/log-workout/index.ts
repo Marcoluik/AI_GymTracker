@@ -20,7 +20,7 @@ const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-const CLAUDE_MODEL = "claude-sonnet-4-20250514";
+const CLAUDE_MODEL = "claude-sonnet-4-5";
 const VALID_TYPES = ["chest", "back", "legs", "abs", "run"] as const;
 type WorkoutType = typeof VALID_TYPES[number];
 
@@ -131,6 +131,7 @@ async function logFromDefaults(
   supabase: SupabaseClient,
   type: WorkoutType,
   date: string,
+  session_id?: string,
 ): Promise<{ workout_id: string }> {
   const programRows = await fetchProgram(supabase, type);
 
@@ -141,6 +142,7 @@ async function logFromDefaults(
       workout_type: type,
       raw_message: null,
       notes: null,
+      ...(session_id ? { session_id } : {}),
     })
     .select()
     .single();
@@ -174,6 +176,7 @@ async function logViaClaude(
   type: WorkoutType,
   message: string,
   date: string,
+  session_id?: string,
 ): Promise<{ workout_id: string; parsed: unknown }> {
   let programRows: ProgramRow[] = [];
   let programText = "(this is a run, no exercises)";
@@ -213,9 +216,11 @@ ${userMessage}`;
     throw new Error(`Claude API ${claudeRes.status}: ${errText}`);
   }
   const claudeData = await claudeRes.json();
-  const claudeText: string = claudeData?.content?.[0]?.text?.trim() ?? "";
+  let claudeText: string = claudeData?.content?.[0]?.text?.trim() ?? "";
   console.log(`[log-workout] Claude returned ${claudeText.length} chars`);
   if (!claudeText) throw new Error("Claude returned empty response");
+  // Strip markdown code fences if the model wraps its output
+  claudeText = claudeText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
 
   type ParsedSet = {
     weight_kg: number | null;
@@ -254,6 +259,7 @@ ${userMessage}`;
       workout_type: type,
       raw_message: message || null,
       notes: parsed.notes ?? null,
+      ...(session_id ? { session_id } : {}),
     })
     .select()
     .single();
@@ -376,13 +382,19 @@ Deno.serve(async (req) => {
       auth: { persistSession: false },
     });
 
-    // 1. Main workout — always Claude-parsed
-    const main = await logViaClaude(supabase, workout_type, message, date);
+    // Generate a session_id shared by main + abs so UI can group them
+    const session_id = crypto.randomUUID();
 
-    // 2. Optional Abs add-on — defaults only, no AI call
+    // 1. Main workout — always Claude-parsed
+    const main = await logViaClaude(supabase, workout_type, message, date, session_id);
+
+    // Use whatever date Claude determined (handles "yesterday", "11 may", etc.)
+    const effectiveDate = (main.parsed as { date?: string })?.date || date;
+
+    // 2. Optional Abs add-on — defaults only, no AI call, same date + session as main
     let abs_workout_id: string | null = null;
     if (also_abs && workout_type !== "abs" && workout_type !== "run") {
-      const r = await logFromDefaults(supabase, "abs", date);
+      const r = await logFromDefaults(supabase, "abs", effectiveDate, session_id);
       abs_workout_id = r.workout_id;
     }
 
