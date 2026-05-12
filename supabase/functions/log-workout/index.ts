@@ -68,6 +68,8 @@ type ProgramRow = {
   default_reps: number | null;
   display_order: number;
   is_bodyweight_base: boolean | null;
+  per_set_weights: number[] | null;
+  to_failure: boolean | null;
 };
 
 type SetInsert = {
@@ -90,20 +92,27 @@ function jsonResponse(body: unknown, status = 200): Response {
 function formatProgramLine(p: ProgramRow): string {
   const bw = p.is_bodyweight_base === true;
   const sets = p.default_sets ?? 3;
-  const reps = p.default_reps ?? 8;
   const isTimed = /plank|hold/.test(p.exercise_name);
-  const repsUnit = isTimed ? `${reps}s hold` : `${reps} reps`;
+
+  let repsUnit: string;
+  if (p.to_failure) {
+    repsUnit = "to failure";
+  } else {
+    const reps = p.default_reps ?? 8;
+    repsUnit = isTimed ? `${reps}s hold` : `${reps} reps`;
+  }
+
   let weightPart: string;
   if (bw) {
     weightPart =
       p.default_weight_kg === null || p.default_weight_kg === undefined
         ? "bodyweight (no added load)"
         : `bodyweight + ${p.default_weight_kg}kg added load (belt/vest/plate — not total body weight)`;
+  } else if (p.per_set_weights && p.per_set_weights.length > 0) {
+    weightPart = `${p.per_set_weights.map((w) => `${w}kg`).join(", ")} per set (set 1 first)`;
   } else {
     weightPart =
-      p.default_weight_kg === null
-        ? "bodyweight"
-        : `${p.default_weight_kg}kg`;
+      p.default_weight_kg === null ? "bodyweight" : `${p.default_weight_kg}kg`;
   }
   return `- ${p.exercise_name}: ${sets} sets × ${repsUnit} @ ${weightPart}`;
 }
@@ -115,7 +124,7 @@ async function fetchProgram(
   const { data, error } = await supabase
     .from("program")
     .select(
-      "exercise_name, default_weight_kg, default_sets, default_reps, display_order, is_bodyweight_base",
+      "exercise_name, default_weight_kg, default_sets, default_reps, display_order, is_bodyweight_base, per_set_weights, to_failure",
     )
     .eq("workout_type", type)
     .order("display_order", { ascending: true });

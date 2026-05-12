@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 import {
-  catalogForType,
   filterCatalog,
   isTimedExerciseName,
   type CatalogExercise,
@@ -26,10 +25,13 @@ type Row = {
   default_reps: number | null;
   display_order: number;
   is_bodyweight_base: boolean;
+  per_set_weights: number[] | null;
+  to_failure: boolean;
 };
 
-type ProgramFromDb = Omit<Row, "is_bodyweight_base"> & {
+type ProgramFromDb = Omit<Row, "is_bodyweight_base" | "to_failure"> & {
   is_bodyweight_base?: boolean | null;
+  to_failure?: boolean | null;
 };
 
 const TYPES = ["chest", "back", "legs", "abs"] as const;
@@ -46,28 +48,28 @@ function labelize(name: string) {
 }
 
 function normalize(value: string): string {
-  return value
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, "_")
-    .replace(/[^a-z0-9_]/g, "");
+  return value.toLowerCase().trim().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
 }
 
-function repsLabel(name: string, reps: number | null): string {
+function repsLabel(row: Row): string {
+  if (row.to_failure) return "failure";
+  const reps = row.default_reps;
   if (reps === null || reps === undefined) return "—";
-  return isTimedExerciseName(name) ? `${reps}s` : `${reps} reps`;
+  return isTimedExerciseName(row.exercise_name) ? `${reps}s` : `${reps} reps`;
 }
 
 function rowSummary(row: Row): string {
   const parts: string[] = [];
   if (row.default_sets) parts.push(`${row.default_sets} sets`);
-  parts.push(repsLabel(row.exercise_name, row.default_reps));
+  parts.push(repsLabel(row));
   if (row.is_bodyweight_base) {
     parts.push(
       row.default_weight_kg && row.default_weight_kg > 0
         ? `BW + ${row.default_weight_kg} kg`
         : "BW",
     );
+  } else if (row.per_set_weights && row.per_set_weights.length > 0) {
+    parts.push(`${row.per_set_weights.join(" / ")} kg`);
   } else if (row.default_weight_kg !== null) {
     parts.push(`${row.default_weight_kg} kg`);
   }
@@ -94,15 +96,15 @@ export default function Program() {
         raw.map((r) => ({
           ...r,
           is_bodyweight_base: !!r.is_bodyweight_base,
+          to_failure: !!r.to_failure,
+          per_set_weights: r.per_set_weights ?? null,
         })),
       );
     }
     setLoading(false);
   }
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
 
   async function updateRow(id: number, patch: Partial<Row>) {
     const { error } = await supabase.from("program").update(patch).eq("id", id);
@@ -123,12 +125,10 @@ export default function Program() {
     sets: string,
     reps: string,
     isBodyweightBase: boolean,
+    toFailure: boolean,
   ) {
     const trimmed = normalize(name);
-    if (!trimmed) {
-      alert("Exercise name required");
-      return;
-    }
+    if (!trimmed) { alert("Exercise name required"); return; }
     const typeRows = rows.filter((r) => r.workout_type === type);
     const maxOrder = typeRows.reduce((m, r) => Math.max(m, r.display_order), 0);
     const { error } = await supabase.from("program").insert({
@@ -136,9 +136,10 @@ export default function Program() {
       exercise_name: trimmed,
       default_weight_kg: weight === "" ? null : parseFloat(weight),
       default_sets: sets === "" ? null : parseInt(sets, 10),
-      default_reps: reps === "" ? null : parseInt(reps, 10),
+      default_reps: toFailure ? null : (reps === "" ? null : parseInt(reps, 10)),
       display_order: maxOrder + 1,
       is_bodyweight_base: isBodyweightBase,
+      to_failure: toFailure,
     });
     if (error) alert(error.message);
     else await load();
@@ -157,10 +158,7 @@ export default function Program() {
     return (
       <div className="space-y-4">
         {[0, 1, 2, 3].map((i) => (
-          <div
-            key={i}
-            className="h-32 rounded-2xl bg-neutral-900/60 border border-neutral-900 animate-pulse"
-          />
+          <div key={i} className="h-32 rounded-2xl bg-neutral-900/60 border border-neutral-900 animate-pulse" />
         ))}
       </div>
     );
@@ -168,9 +166,7 @@ export default function Program() {
 
   return (
     <div className="space-y-6 pb-4">
-      <p className="text-sm text-neutral-400 px-1">
-        Your weekly split. Tap an exercise to edit it.
-      </p>
+      <p className="text-sm text-neutral-400 px-1">Your weekly split. Tap an exercise to edit it.</p>
       {TYPES.map((type) => {
         const typeRows = rows
           .filter((r) => r.workout_type === type)
@@ -187,15 +183,9 @@ export default function Program() {
             </div>
             <div className="rounded-2xl overflow-hidden bg-neutral-900 border border-neutral-800">
               {typeRows.length === 0 ? (
-                <p className="px-4 py-6 text-center text-sm text-neutral-500">
-                  No exercises yet
-                </p>
+                <p className="px-4 py-6 text-center text-sm text-neutral-500">No exercises yet</p>
               ) : (
-                <DraggableList
-                  rows={typeRows}
-                  onReorder={reorderSection}
-                  onTap={setEditing}
-                />
+                <DraggableList rows={typeRows} onReorder={reorderSection} onTap={setEditing} />
               )}
               <button
                 type="button"
@@ -226,8 +216,8 @@ export default function Program() {
         <AddSheet
           type={addingType}
           onClose={() => setAddingType(null)}
-          onAdd={async (name, weight, sets, reps, bw) => {
-            await addRow(addingType, name, weight, sets, reps, bw);
+          onAdd={async (name, weight, sets, reps, bw, toFailure) => {
+            await addRow(addingType, name, weight, sets, reps, bw, toFailure);
             setAddingType(null);
           }}
         />
@@ -235,6 +225,8 @@ export default function Program() {
     </div>
   );
 }
+
+// ─── Draggable list ───────────────────────────────────────────────────────────
 
 function DraggableList({
   rows,
@@ -249,10 +241,7 @@ function DraggableList({
   const [draggingId, setDraggingId] = useState<number | null>(null);
   const itemEls = useRef<Map<number, HTMLDivElement>>(new Map());
 
-  // Sync when prop changes (after DB save)
-  useEffect(() => {
-    setItems(rows);
-  }, [rows]);
+  useEffect(() => { setItems(rows); }, [rows]);
 
   function setRef(id: number, el: HTMLDivElement | null) {
     if (el) itemEls.current.set(id, el);
@@ -294,49 +283,41 @@ function DraggableList({
 
   return (
     <>
-      {items.map((r) => {
-        const isDragging = r.id === draggingId;
-        return (
+      {items.map((r) => (
+        <div
+          key={r.id}
+          ref={(el) => setRef(r.id, el)}
+          className={`flex items-center border-b border-neutral-800 last:border-b-0 transition-opacity ${
+            r.id === draggingId ? "opacity-40" : "opacity-100"
+          }`}
+        >
           <div
-            key={r.id}
-            ref={(el) => setRef(r.id, el)}
-            className={`flex items-center border-b border-neutral-800 last:border-b-0 transition-opacity ${
-              isDragging ? "opacity-40" : "opacity-100"
-            }`}
+            onPointerDown={(e) => onPointerDown(e, r.id)}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
+            className="pl-4 pr-2 py-4 touch-none cursor-grab active:cursor-grabbing text-neutral-600 hover:text-neutral-400 shrink-0"
           >
-            {/* Drag handle */}
-            <div
-              onPointerDown={(e) => onPointerDown(e, r.id)}
-              onPointerMove={onPointerMove}
-              onPointerUp={onPointerUp}
-              onPointerCancel={onPointerUp}
-              className="pl-4 pr-2 py-4 touch-none cursor-grab active:cursor-grabbing text-neutral-600 hover:text-neutral-400 shrink-0"
-            >
-              <GripIcon className="w-4 h-4" />
-            </div>
-
-            {/* Row content — tappable */}
-            <button
-              type="button"
-              onClick={() => !isDragging && onTap(r)}
-              className="flex-1 flex items-center justify-between gap-3 pr-4 py-3.5 text-left"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="font-medium text-[15px] truncate">
-                  {labelize(r.exercise_name)}
-                </div>
-                <div className="text-xs text-neutral-500 mt-0.5 truncate">
-                  {rowSummary(r)}
-                </div>
-              </div>
-              <ChevronRightIcon className="w-4 h-4 text-neutral-600 shrink-0" />
-            </button>
+            <GripIcon className="w-4 h-4" />
           </div>
-        );
-      })}
+          <button
+            type="button"
+            onClick={() => r.id !== draggingId && onTap(r)}
+            className="flex-1 flex items-center justify-between gap-3 pr-4 py-3.5 text-left"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="font-medium text-[15px] truncate">{labelize(r.exercise_name)}</div>
+              <div className="text-xs text-neutral-500 mt-0.5 truncate">{rowSummary(r)}</div>
+            </div>
+            <ChevronRightIcon className="w-4 h-4 text-neutral-600 shrink-0" />
+          </button>
+        </div>
+      ))}
     </>
   );
 }
+
+// ─── Shared field components ──────────────────────────────────────────────────
 
 function NumberField({
   label,
@@ -345,6 +326,7 @@ function NumberField({
   onBlur,
   placeholder,
   step,
+  disabled,
 }: {
   label: string;
   value: string;
@@ -352,6 +334,7 @@ function NumberField({
   onBlur?: () => void;
   placeholder?: string;
   step?: string;
+  disabled?: boolean;
 }) {
   return (
     <div>
@@ -366,11 +349,14 @@ function NumberField({
         onChange={(e) => onChange(e.target.value)}
         onBlur={onBlur}
         placeholder={placeholder}
-        className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-base text-center focus:outline-none focus:ring-2 focus:ring-neutral-600 placeholder-neutral-500"
+        disabled={disabled}
+        className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-base text-center focus:outline-none focus:ring-2 focus:ring-neutral-600 placeholder-neutral-500 disabled:opacity-40"
       />
     </div>
   );
 }
+
+// ─── Edit sheet ───────────────────────────────────────────────────────────────
 
 function EditSheet({
   row,
@@ -384,10 +370,19 @@ function EditSheet({
   onDelete: () => void;
 }) {
   const [name, setName] = useState(labelize(row.exercise_name));
-  const [weight, setWeight] = useState<string>(row.default_weight_kg?.toString() ?? "");
-  const [sets, setSets] = useState<string>(row.default_sets?.toString() ?? "");
-  const [reps, setReps] = useState<string>(row.default_reps?.toString() ?? "");
+  const [weight, setWeight] = useState(row.default_weight_kg?.toString() ?? "");
+  const [sets, setSets] = useState(row.default_sets?.toString() ?? "");
+  const [reps, setReps] = useState(row.default_reps?.toString() ?? "");
   const [bw, setBw] = useState(row.is_bodyweight_base);
+  const [toFailure, setToFailure] = useState(row.to_failure);
+  const [perSetMode, setPerSetMode] = useState(!!(row.per_set_weights && row.per_set_weights.length > 0));
+  const [perSetWeights, setPerSetWeights] = useState<string[]>(() => {
+    if (row.per_set_weights && row.per_set_weights.length > 0)
+      return row.per_set_weights.map(String);
+    const n = row.default_sets ?? 3;
+    const base = row.default_weight_kg?.toString() ?? "";
+    return Array.from({ length: n }, () => base);
+  });
 
   useEffect(() => {
     setName(labelize(row.exercise_name));
@@ -395,7 +390,16 @@ function EditSheet({
     setSets(row.default_sets?.toString() ?? "");
     setReps(row.default_reps?.toString() ?? "");
     setBw(row.is_bodyweight_base);
-  }, [row.id, row.exercise_name, row.default_weight_kg, row.default_sets, row.default_reps, row.is_bodyweight_base]);
+    setToFailure(row.to_failure);
+    const hasPsw = !!(row.per_set_weights && row.per_set_weights.length > 0);
+    setPerSetMode(hasPsw);
+    const n = row.default_sets ?? 3;
+    setPerSetWeights(
+      hasPsw
+        ? row.per_set_weights!.map(String)
+        : Array.from({ length: n }, () => row.default_weight_kg?.toString() ?? ""),
+    );
+  }, [row.id]);
 
   function commitName() {
     const normalized = normalize(name) || row.exercise_name;
@@ -407,7 +411,16 @@ function EditSheet({
   }
   function commitSets() {
     const next = sets === "" ? null : parseInt(sets, 10);
-    if (next !== row.default_sets) onPatch({ default_sets: next });
+    if (next !== row.default_sets) {
+      // Resize perSetWeights array if in per-set mode
+      if (perSetMode && next) {
+        setPerSetWeights((prev) => {
+          const arr = Array.from({ length: next }, (_, i) => prev[i] ?? prev[prev.length - 1] ?? "");
+          return arr;
+        });
+      }
+      onPatch({ default_sets: next });
+    }
   }
   function commitReps() {
     const next = reps === "" ? null : parseInt(reps, 10);
@@ -416,6 +429,29 @@ function EditSheet({
   function commitBw(next: boolean) {
     setBw(next);
     if (next !== row.is_bodyweight_base) onPatch({ is_bodyweight_base: next });
+  }
+  function commitToFailure(next: boolean) {
+    setToFailure(next);
+    onPatch({ to_failure: next, default_reps: next ? null : (reps === "" ? null : parseInt(reps, 10)) });
+  }
+  function commitPerSetMode(next: boolean) {
+    setPerSetMode(next);
+    if (next) {
+      const n = parseInt(sets, 10) || row.default_sets || 3;
+      const base = weight !== "" ? weight : (row.default_weight_kg?.toString() ?? "");
+      const arr = Array.from({ length: n }, (_, i) => perSetWeights[i] ?? base);
+      setPerSetWeights(arr);
+      onPatch({ per_set_weights: arr.map((v) => (v === "" ? 0 : parseFloat(v))) });
+    } else {
+      setPerSetWeights([]);
+      onPatch({ per_set_weights: null });
+    }
+  }
+  function commitPerSetWeight(index: number, value: string) {
+    const next = [...perSetWeights];
+    next[index] = value;
+    setPerSetWeights(next);
+    onPatch({ per_set_weights: next.map((v) => (v === "" ? 0 : parseFloat(v))) });
   }
 
   const suggestions = useMemo(() => filterCatalog(row.workout_type, name, 6), [row.workout_type, name]);
@@ -426,10 +462,12 @@ function EditSheet({
     );
 
   const timed = isTimedExerciseName(normalize(name));
+  const numSets = parseInt(sets, 10) || row.default_sets || 3;
 
   return (
     <Sheet open onClose={onClose} title="Edit exercise">
       <div className="space-y-5">
+        {/* Name */}
         <div>
           <label className="text-[11px] uppercase tracking-wider text-neutral-400 font-semibold block mb-2">
             Name
@@ -452,7 +490,7 @@ function EditSheet({
                     commitBw(!!s.bodyweightBase);
                     onPatch({ exercise_name: s.name, is_bodyweight_base: !!s.bodyweightBase });
                   }}
-                  className="text-xs px-2.5 py-1 rounded-full bg-neutral-800 text-neutral-300 hover:bg-neutral-700 active:bg-neutral-600"
+                  className="text-xs px-2.5 py-1 rounded-full bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
                 >
                   {s.label}
                 </button>
@@ -461,16 +499,16 @@ function EditSheet({
           )}
         </div>
 
+        {/* Bodyweight toggle */}
         <label className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="text-sm font-medium">Bodyweight movement</div>
-            <div className="text-xs text-neutral-500 mt-0.5">
-              Pull-ups, dips, planks. Weight below = added load only.
-            </div>
+            <div className="text-xs text-neutral-500 mt-0.5">Pull-ups, dips, planks. Weight = added load only.</div>
           </div>
           <Toggle checked={bw} onChange={commitBw} ariaLabel="Bodyweight movement" />
         </label>
 
+        {/* Sets / Reps / Weight */}
         <div className="grid grid-cols-3 gap-2">
           <NumberField
             label={bw ? "Added kg" : "kg"}
@@ -479,6 +517,7 @@ function EditSheet({
             onBlur={commitWeight}
             step="0.5"
             placeholder={bw ? "0" : "kg"}
+            disabled={perSetMode}
           />
           <NumberField
             label="Sets"
@@ -488,16 +527,81 @@ function EditSheet({
             step="1"
             placeholder="3"
           />
-          <NumberField
-            label={timed ? "Seconds" : "Reps"}
-            value={reps}
-            onChange={setReps}
-            onBlur={commitReps}
-            step="1"
-            placeholder={timed ? "60" : "8"}
-          />
+          {/* Reps with To Failure toggle */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold">
+                {timed ? "Seconds" : "Reps"}
+              </span>
+              <button
+                type="button"
+                onClick={() => commitToFailure(!toFailure)}
+                className={`text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded transition-colors ${
+                  toFailure
+                    ? "bg-orange-500/20 text-orange-300 ring-1 ring-orange-500/40"
+                    : "bg-neutral-800 text-neutral-500 hover:text-neutral-300"
+                }`}
+              >
+                {toFailure ? "Failure ✓" : "To failure"}
+              </button>
+            </div>
+            <input
+              type="number"
+              inputMode="decimal"
+              step="1"
+              value={toFailure ? "" : reps}
+              onChange={(e) => setReps(e.target.value)}
+              onBlur={commitReps}
+              placeholder={toFailure ? "—" : timed ? "60" : "8"}
+              disabled={toFailure}
+              className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-base text-center focus:outline-none focus:ring-2 focus:ring-neutral-600 placeholder-neutral-500 disabled:opacity-40"
+            />
+          </div>
         </div>
 
+        {/* Per-set weights — only when sets > 1 and not bodyweight-only */}
+        {numSets > 1 && (
+          <div>
+            <button
+              type="button"
+              onClick={() => commitPerSetMode(!perSetMode)}
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg border text-sm transition-colors ${
+                perSetMode
+                  ? "border-sky-500/40 bg-sky-500/10 text-sky-300"
+                  : "border-neutral-700 bg-neutral-800/50 text-neutral-400 hover:text-neutral-200"
+              }`}
+            >
+              <span>Different weight per set</span>
+              <span className={`text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded ${
+                perSetMode ? "bg-sky-500/20 text-sky-300" : "bg-neutral-700 text-neutral-500"
+              }`}>
+                {perSetMode ? "On" : "Off"}
+              </span>
+            </button>
+
+            {perSetMode && (
+              <div className="mt-2 space-y-2">
+                {Array.from({ length: numSets }).map((_, i) => (
+                  <div key={i} className="flex items-center gap-3">
+                    <span className="text-xs text-neutral-500 w-10 shrink-0">Set {i + 1}</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      step="0.5"
+                      value={perSetWeights[i] ?? ""}
+                      onChange={(e) => commitPerSetWeight(i, e.target.value)}
+                      placeholder="kg"
+                      className="flex-1 bg-neutral-800 rounded-lg px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-neutral-600 placeholder-neutral-600"
+                    />
+                    <span className="text-xs text-neutral-600 w-4 shrink-0">kg</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Delete */}
         <button
           type="button"
           onClick={onDelete}
@@ -511,6 +615,8 @@ function EditSheet({
   );
 }
 
+// ─── Add sheet ────────────────────────────────────────────────────────────────
+
 function AddSheet({
   type,
   onClose,
@@ -518,7 +624,7 @@ function AddSheet({
 }: {
   type: string;
   onClose: () => void;
-  onAdd: (name: string, weight: string, sets: string, reps: string, bw: boolean) => Promise<void>;
+  onAdd: (name: string, weight: string, sets: string, reps: string, bw: boolean, toFailure: boolean) => Promise<void>;
 }) {
   const [display, setDisplay] = useState("");
   const [picked, setPicked] = useState<CatalogExercise | null>(null);
@@ -526,6 +632,7 @@ function AddSheet({
   const [sets, setSets] = useState("3");
   const [reps, setReps] = useState("8");
   const [bw, setBw] = useState(false);
+  const [toFailure, setToFailure] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const suggestions = useMemo(() => filterCatalog(type, display, 12), [type, display]);
@@ -546,7 +653,7 @@ function AddSheet({
     if (!display.trim() || submitting) return;
     setSubmitting(true);
     const name = picked ? picked.name : normalize(display);
-    await onAdd(name, weight, sets, reps, bw);
+    await onAdd(name, weight, sets, reps, bw, toFailure);
     setSubmitting(false);
   }
 
@@ -614,35 +721,42 @@ function AddSheet({
         <label className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="text-sm font-medium">Bodyweight movement</div>
-            <div className="text-xs text-neutral-500 mt-0.5">
-              Weight below = added load (belt, vest) only.
-            </div>
+            <div className="text-xs text-neutral-500 mt-0.5">Weight = added load (belt, vest) only.</div>
           </div>
           <Toggle checked={bw} onChange={setBw} ariaLabel="Bodyweight movement" />
         </label>
 
         <div className="grid grid-cols-3 gap-2">
-          <NumberField
-            label={bw ? "Added kg" : "kg"}
-            value={weight}
-            onChange={setWeight}
-            step="0.5"
-            placeholder={bw ? "0" : "kg"}
-          />
-          <NumberField
-            label="Sets"
-            value={sets}
-            onChange={setSets}
-            step="1"
-            placeholder="3"
-          />
-          <NumberField
-            label={timed ? "Seconds" : "Reps"}
-            value={reps}
-            onChange={setReps}
-            step="1"
-            placeholder={timed ? "60" : "8"}
-          />
+          <NumberField label={bw ? "Added kg" : "kg"} value={weight} onChange={setWeight} step="0.5" placeholder={bw ? "0" : "kg"} />
+          <NumberField label="Sets" value={sets} onChange={setSets} step="1" placeholder="3" />
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold">
+                {timed ? "Seconds" : "Reps"}
+              </span>
+              <button
+                type="button"
+                onClick={() => setToFailure((v) => !v)}
+                className={`text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded transition-colors ${
+                  toFailure
+                    ? "bg-orange-500/20 text-orange-300 ring-1 ring-orange-500/40"
+                    : "bg-neutral-800 text-neutral-500 hover:text-neutral-300"
+                }`}
+              >
+                {toFailure ? "Failure ✓" : "To failure"}
+              </button>
+            </div>
+            <input
+              type="number"
+              inputMode="decimal"
+              step="1"
+              value={toFailure ? "" : reps}
+              onChange={(e) => setReps(e.target.value)}
+              placeholder={toFailure ? "—" : timed ? "60" : "8"}
+              disabled={toFailure}
+              className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-base text-center focus:outline-none focus:ring-2 focus:ring-neutral-600 placeholder-neutral-500 disabled:opacity-40"
+            />
+          </div>
         </div>
 
         <button
