@@ -90,9 +90,223 @@ export default function Trends() {
 
   return (
     <div className="pb-4 space-y-4">
+      <WeeklySummary />
       <MuscleRecovery recovery={recovery} loading={loading} />
+      <BodyWeight />
       <ProgressPhotos />
     </div>
+  );
+}
+
+// ── Weekly summary ────────────────────────────────────────────────────────────
+function WeeklySummary() {
+  type Stat = { workouts: number; sets: number; volume: number };
+  const [thisWeek, setThisWeek] = useState<Stat>({ workouts: 0, sets: 0, volume: 0 });
+  const [lastWeek, setLastWeek] = useState<Stat>({ workouts: 0, sets: 0, volume: 0 });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      const today = new Date();
+      const oneWeekAgo = new Date(today.getTime() - 7 * 86_400_000).toISOString().slice(0, 10);
+      const twoWeeksAgo = new Date(today.getTime() - 14 * 86_400_000).toISOString().slice(0, 10);
+
+      const { data: workouts } = await supabase
+        .from("workouts")
+        .select("id, date")
+        .gte("date", twoWeeksAgo);
+
+      const ws = (workouts ?? []) as { id: string; date: string }[];
+      const thisIds = new Set(ws.filter((w) => w.date >= oneWeekAgo).map((w) => w.id));
+      const lastIds = new Set(ws.filter((w) => w.date < oneWeekAgo).map((w) => w.id));
+
+      let sets: { workout_id: string; weight_kg: number | null; reps: number | null; skipped: boolean }[] = [];
+      if (thisIds.size > 0 || lastIds.size > 0) {
+        const { data } = await supabase
+          .from("sets")
+          .select("workout_id, weight_kg, reps, skipped")
+          .in("workout_id", [...thisIds, ...lastIds]);
+        sets = (data as typeof sets) ?? [];
+      }
+
+      const tw: Stat = { workouts: thisIds.size, sets: 0, volume: 0 };
+      const lw: Stat = { workouts: lastIds.size, sets: 0, volume: 0 };
+      for (const s of sets) {
+        if (s.skipped) continue;
+        const bucket = thisIds.has(s.workout_id) ? tw : lw;
+        bucket.sets += 1;
+        bucket.volume += (s.weight_kg ?? 0) * (s.reps ?? 0);
+      }
+      setThisWeek(tw);
+      setLastWeek(lw);
+      setLoading(false);
+    })();
+  }, []);
+
+  if (loading)
+    return <div className="rounded-2xl border border-neutral-800 bg-neutral-900 h-28 animate-pulse" />;
+
+  return (
+    <div className="rounded-2xl border border-neutral-800 bg-neutral-900 overflow-hidden">
+      <div className="px-4 pt-4 pb-2 border-b border-neutral-800">
+        <h2 className="font-semibold text-sm">This week</h2>
+      </div>
+      <div className="grid grid-cols-3 divide-x divide-neutral-800">
+        <StatCell label="Workouts" value={thisWeek.workouts.toString()} delta={thisWeek.workouts - lastWeek.workouts} prevExists={lastWeek.workouts > 0} />
+        <StatCell label="Sets" value={thisWeek.sets.toString()} delta={thisWeek.sets - lastWeek.sets} prevExists={lastWeek.sets > 0} />
+        <StatCell
+          label="Volume"
+          value={thisWeek.volume > 0 ? Math.round(thisWeek.volume).toLocaleString() : "0"}
+          suffix="kg"
+          delta={Math.round(thisWeek.volume - lastWeek.volume)}
+          prevExists={lastWeek.volume > 0}
+        />
+      </div>
+    </div>
+  );
+}
+
+function StatCell({
+  label, value, suffix, delta, prevExists,
+}: { label: string; value: string; suffix?: string; delta: number; prevExists: boolean }) {
+  const deltaColor = delta > 0 ? "text-emerald-400" : delta < 0 ? "text-rose-400" : "text-neutral-500";
+  return (
+    <div className="px-3 py-3">
+      <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 mb-1">{label}</p>
+      <p className="text-lg font-semibold">
+        {value}
+        {suffix && <span className="text-xs text-neutral-500 ml-0.5">{suffix}</span>}
+      </p>
+      {prevExists && (
+        <p className={`text-[10px] mt-0.5 ${deltaColor}`}>
+          {delta > 0 ? "+" : ""}{delta.toLocaleString()}{suffix ? ` ${suffix}` : ""} vs last
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Body weight ───────────────────────────────────────────────────────────────
+type BodyWeightRow = { date: string; kg: number };
+
+function BodyWeight() {
+  const [rows, setRows] = useState<BodyWeightRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [input, setInput] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+    const { data } = await supabase
+      .from("body_weights")
+      .select("date, kg")
+      .gte("date", ninetyDaysAgo)
+      .order("date", { ascending: true });
+    setRows((data as BodyWeightRow[]) ?? []);
+    setLoading(false);
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function save() {
+    const kg = parseFloat(input);
+    if (!kg || kg <= 0 || saving) return;
+    setSaving(true);
+    const today = new Date().toISOString().slice(0, 10);
+    const { error } = await supabase
+      .from("body_weights")
+      .upsert({ date: today, kg }, { onConflict: "date" });
+    setSaving(false);
+    if (error) { alert(error.message); return; }
+    setInput("");
+    await load();
+  }
+
+  const latest = rows.length > 0 ? rows[rows.length - 1] : null;
+  const previous = rows.length > 1 ? rows[rows.length - 2] : null;
+  const delta = latest && previous ? latest.kg - previous.kg : 0;
+
+  return (
+    <div className="rounded-2xl border border-neutral-800 bg-neutral-900 overflow-hidden">
+      <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-neutral-800">
+        <h2 className="font-semibold text-sm">Body weight</h2>
+        {latest && (
+          <span className="text-[10px] text-neutral-500">
+            last: {new Date(latest.date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+          </span>
+        )}
+      </div>
+
+      <div className="px-4 py-3 flex items-end gap-4">
+        <div className="shrink-0">
+          {latest ? (
+            <>
+              <p className="text-2xl font-semibold">
+                {latest.kg}
+                <span className="text-xs text-neutral-500 ml-1">kg</span>
+              </p>
+              {previous && (
+                <p className={`text-[10px] mt-0.5 ${delta > 0 ? "text-rose-400" : delta < 0 ? "text-emerald-400" : "text-neutral-500"}`}>
+                  {delta > 0 ? "+" : ""}{delta.toFixed(1)} vs last
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="text-sm text-neutral-500">No entries yet</p>
+          )}
+        </div>
+
+        {!loading && rows.length > 1 && (
+          <div className="flex-1 min-w-0">
+            <Sparkline rows={rows} />
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 px-4 pb-4">
+        <input
+          type="number"
+          inputMode="decimal"
+          step="0.1"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Log today's weight"
+          className="flex-1 bg-neutral-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-600 placeholder-neutral-500"
+        />
+        <button
+          onClick={save}
+          disabled={!input.trim() || saving}
+          className="px-4 py-2 rounded-lg bg-white text-black text-sm font-semibold disabled:opacity-40"
+        >
+          {saving ? "…" : "Log"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Sparkline({ rows }: { rows: BodyWeightRow[] }) {
+  const w = 200, h = 50, pad = 4;
+  const innerW = w - pad * 2;
+  const innerH = h - pad * 2;
+  const kgs = rows.map((r) => r.kg);
+  const min = Math.min(...kgs);
+  const max = Math.max(...kgs);
+  const range = Math.max(max - min, 0.1);
+  const points = rows.map((r, i) => {
+    const x = pad + (i / Math.max(rows.length - 1, 1)) * innerW;
+    const y = pad + (1 - (r.kg - min) / range) * innerH;
+    return { x, y };
+  });
+  const path = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-12">
+      <path d={path} stroke="#a3a3a3" fill="none" strokeWidth="1.5" />
+      {points.length > 0 && (
+        <circle cx={points[points.length - 1].x} cy={points[points.length - 1].y} r="2.5" fill="#e5e5e5" />
+      )}
+    </svg>
   );
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { ChevronRightIcon, CalendarIcon } from "../components/icons";
 
@@ -19,6 +19,14 @@ const TYPE_STYLES: Record<string, string> = {
   legs: "bg-emerald-500/15 text-emerald-300 ring-1 ring-inset ring-emerald-500/30",
   abs: "bg-rose-500/15 text-rose-300 ring-1 ring-inset ring-rose-500/30",
   run: "bg-orange-500/15 text-orange-300 ring-1 ring-inset ring-orange-500/30",
+};
+
+const TYPE_DOT_BG: Record<string, string> = {
+  chest: "bg-sky-500",
+  back: "bg-violet-500",
+  legs: "bg-emerald-500",
+  abs: "bg-rose-500",
+  run: "bg-orange-500",
 };
 
 function formatRowDate(dateStr: string): string {
@@ -133,6 +141,7 @@ export default function Workouts() {
 
   return (
     <div className="pb-4 space-y-6">
+      <CalendarHeatmap workouts={workouts} />
       {groups.map((g) => (
         <section key={g.key}>
           <h2 className="text-[11px] uppercase tracking-[0.12em] font-semibold text-neutral-400 px-1 mb-2">
@@ -204,6 +213,90 @@ function PairRow({ main, abs }: { main: Workout; abs: Workout }) {
           <span className="text-xs text-neutral-500 flex-1">Abs — default program</span>
           <ChevronRightIcon className="w-3.5 h-3.5 text-neutral-700 shrink-0" />
         </Link>
+      </div>
+    </div>
+  );
+}
+
+function CalendarHeatmap({ workouts }: { workouts: Workout[] }) {
+  const navigate = useNavigate();
+  const WEEKS = 12;
+
+  // Build a map: date → workouts on that date
+  const byDate = new Map<string, Workout[]>();
+  for (const w of workouts) {
+    const list = byDate.get(w.date) ?? [];
+    list.push(w);
+    byDate.set(w.date, list);
+  }
+
+  // Find the Monday of WEEKS-1 weeks ago
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  const dayOfWeek = (today.getDay() + 6) % 7; // 0 = Monday
+  const startOfThisWeek = new Date(today.getTime() - dayOfWeek * 86_400_000);
+  const startDate = new Date(startOfThisWeek.getTime() - (WEEKS - 1) * 7 * 86_400_000);
+
+  const todayStr = today.toISOString().slice(0, 10);
+
+  // Build column-major grid: weeks × days
+  const grid: { date: string; workouts: Workout[]; isFuture: boolean }[][] = [];
+  for (let w = 0; w < WEEKS; w++) {
+    const col: { date: string; workouts: Workout[]; isFuture: boolean }[] = [];
+    for (let d = 0; d < 7; d++) {
+      const cellDate = new Date(startDate.getTime() + (w * 7 + d) * 86_400_000);
+      const dateStr = cellDate.toISOString().slice(0, 10);
+      col.push({
+        date: dateStr,
+        workouts: byDate.get(dateStr) ?? [],
+        isFuture: dateStr > todayStr,
+      });
+    }
+    grid.push(col);
+  }
+
+  // Unique workout types present, for legend
+  const presentTypes = [...new Set(workouts.map((w) => w.workout_type))];
+
+  return (
+    <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-3">
+      <div className="flex items-center justify-between mb-2 px-1">
+        <p className="text-[11px] uppercase tracking-[0.12em] font-semibold text-neutral-400">
+          Last {WEEKS} weeks
+        </p>
+        <div className="flex items-center gap-1.5">
+          {presentTypes.map((t) => (
+            <span key={t} className="flex items-center gap-1 text-[9px] text-neutral-500">
+              <span className={`w-2 h-2 rounded-sm ${TYPE_DOT_BG[t] ?? "bg-neutral-600"}`} />
+              {t}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="flex gap-1 justify-center">
+        {grid.map((col, i) => (
+          <div key={i} className="flex flex-col gap-1">
+            {col.map((cell, j) => {
+              const main = cell.workouts.find((w) => w.workout_type !== "abs") ?? cell.workouts[0];
+              const has = !!main && !cell.isFuture;
+              return (
+                <button
+                  key={j}
+                  onClick={() => has && navigate(`/workouts/${main.id}`)}
+                  disabled={!has}
+                  title={has ? `${main.workout_type} · ${cell.date}` : cell.date}
+                  className={`w-4 h-4 rounded-[3px] transition-transform ${
+                    cell.isFuture
+                      ? "bg-transparent"
+                      : has
+                        ? `${TYPE_DOT_BG[main.workout_type] ?? "bg-neutral-600"} hover:scale-110 active:scale-95`
+                        : "bg-neutral-800"
+                  }`}
+                />
+              );
+            })}
+          </div>
+        ))}
       </div>
     </div>
   );

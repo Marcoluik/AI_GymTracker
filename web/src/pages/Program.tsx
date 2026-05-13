@@ -7,6 +7,7 @@ import {
   PlusIcon,
   TrashIcon,
   ChevronRightIcon,
+  ChevronDownIcon,
   SearchIcon,
   CheckIcon,
   GripIcon,
@@ -309,17 +310,7 @@ function DraggableList({
             className="flex-1 flex items-center justify-between gap-3 pr-4 py-3.5 text-left"
           >
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="font-medium text-[15px] truncate">{labelize(r.exercise_name)}</span>
-                {!r.exercise_id && (
-                  <span
-                    title="Not linked to exercise library — delete and re-add to link"
-                    className="shrink-0 text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400"
-                  >
-                    Old
-                  </span>
-                )}
-              </div>
+              <div className="font-medium text-[15px] truncate">{labelize(r.exercise_name)}</div>
               <div className="text-xs text-neutral-500 mt-0.5 truncate">{rowSummary(r)}</div>
             </div>
             <ChevronRightIcon className="w-4 h-4 text-neutral-600 shrink-0" />
@@ -472,11 +463,19 @@ function EditSheet({
   return (
     <Sheet open onClose={onClose} title="Edit exercise">
       <div className="space-y-5">
+        {/* Last session + history graph */}
+        <LastSessionHistory exerciseName={row.exercise_name} />
+
         {/* Name */}
         <div>
-          <label className="text-[11px] uppercase tracking-wider text-neutral-400 font-semibold block mb-2">
-            Name
-          </label>
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-[11px] uppercase tracking-wider text-neutral-400 font-semibold">
+              Name
+            </label>
+            {!row.exercise_id && (
+              <span className="text-[10px] text-neutral-500">Custom</span>
+            )}
+          </div>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -689,10 +688,27 @@ function AddSheet({
   }
 
   async function submit() {
-    const finalName = picked ? picked.name : search.trim();
-    const exerciseId = picked ? picked.id : null;
-    if (!finalName || submitting) return;
+    if (submitting || !search.trim()) return;
     setSubmitting(true);
+
+    // Resolve to a library exercise even when the user didn't tap a result:
+    // 1) Exact match in current results list, 2) DB lookup by exact name.
+    let effective = picked;
+    if (!effective) {
+      const target = search.trim().toLowerCase();
+      effective = results.find((r) => r.name.toLowerCase() === target) ?? null;
+    }
+    if (!effective) {
+      const { data } = await supabase
+        .from("exercise_library")
+        .select("id,name,primary_muscles,equipment,is_custom")
+        .ilike("name", search.trim())
+        .limit(1);
+      if (data && data.length > 0) effective = data[0] as LibraryExercise;
+    }
+
+    const finalName = effective ? effective.name : search.trim();
+    const exerciseId = effective ? effective.id : null;
     const psw = perSetMode ? perSetWeights.map((v) => (v === "" ? 0 : parseFloat(v))) : null;
     await onAdd(finalName, exerciseId, weight, sets, reps, bw, toFailure, psw);
     setSubmitting(false);
@@ -803,5 +819,139 @@ function AddSheet({
         </button>
       </div>
     </Sheet>
+  );
+}
+
+// ─── Last session + history chart ─────────────────────────────────────────────
+
+type SessionStat = { date: string; maxWeight: number; repsAtMax: number; volume: number; nSets: number };
+
+function LastSessionHistory({ exerciseName }: { exerciseName: string }) {
+  const [sessions, setSessions] = useState<SessionStat[] | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase
+        .from("sets")
+        .select("weight_kg, reps, skipped, workout_id, workouts!inner(date)")
+        .eq("exercise_name", exerciseName);
+      const rows = (data ?? []) as {
+        weight_kg: number | null;
+        reps: number | null;
+        skipped: boolean;
+        workout_id: string;
+        workouts: { date: string } | { date: string }[];
+      }[];
+
+      const byDate = new Map<string, { weight: number; reps: number }[]>();
+      for (const r of rows) {
+        if (r.skipped) continue;
+        const date = Array.isArray(r.workouts) ? r.workouts[0]?.date : r.workouts?.date;
+        if (!date) continue;
+        const list = byDate.get(date) ?? [];
+        list.push({ weight: r.weight_kg ?? 0, reps: r.reps ?? 0 });
+        byDate.set(date, list);
+      }
+
+      const stats: SessionStat[] = [...byDate.entries()]
+        .map(([date, sets]) => {
+          const maxWeight = Math.max(...sets.map((s) => s.weight));
+          const repsAtMax = sets.find((s) => s.weight === maxWeight)?.reps ?? 0;
+          const volume = sets.reduce((sum, s) => sum + s.weight * s.reps, 0);
+          return { date, maxWeight, repsAtMax, volume, nSets: sets.length };
+        })
+        .sort((a, b) => b.date.localeCompare(a.date));
+
+      setSessions(stats);
+    })();
+  }, [exerciseName]);
+
+  if (sessions === null) return null;
+  if (sessions.length === 0) return null;
+
+  const last = sessions[0];
+  const daysAgo = Math.floor(
+    (Date.now() - new Date(last.date + "T12:00:00").getTime()) / 86_400_000,
+  );
+  const whenLabel = daysAgo === 0 ? "today" : daysAgo === 1 ? "1 day ago" : `${daysAgo} days ago`;
+  const lastLabel = `${last.maxWeight} kg × ${last.repsAtMax} · ${last.nSets} ${last.nSets === 1 ? "set" : "sets"}`;
+
+  const recent = sessions.slice(0, 10).reverse(); // chronological for chart
+
+  return (
+    <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-neutral-800/40 transition-colors"
+      >
+        <span className="text-[11px] text-neutral-500 min-w-0">
+          Last:{" "}
+          <span className="text-neutral-300">{lastLabel}</span>
+          <span className="text-neutral-600"> · {whenLabel}</span>
+        </span>
+        {recent.length > 1 && (
+          <ChevronDownIcon
+            className={`w-3.5 h-3.5 text-neutral-600 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
+          />
+        )}
+      </button>
+      {expanded && recent.length > 1 && (
+        <div className="border-t border-neutral-800 px-3 py-3">
+          <ProgressChart sessions={recent} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProgressChart({ sessions }: { sessions: SessionStat[] }) {
+  const w = 280, h = 90, pad = 10;
+  const innerW = w - pad * 2;
+  const innerH = h - pad * 2;
+
+  const weights = sessions.map((s) => s.maxWeight);
+  const min = Math.min(...weights);
+  const max = Math.max(...weights);
+  const range = Math.max(max - min, 1);
+
+  const points = sessions.map((s, i) => {
+    const x = pad + (i / Math.max(sessions.length - 1, 1)) * innerW;
+    const y = pad + (1 - (s.maxWeight - min) / range) * innerH;
+    return { x, y, weight: s.maxWeight };
+  });
+
+  // Mark each running-max as a PR point
+  let runMax = -Infinity;
+  const isPR = points.map((p) => {
+    const yes = p.weight > runMax;
+    if (yes) runMax = p.weight;
+    return yes;
+  });
+
+  const path = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
+
+  return (
+    <div>
+      <div className="flex items-center justify-between text-[10px] uppercase tracking-wider font-semibold text-neutral-500 mb-2">
+        <span>Max weight · last {sessions.length} sessions</span>
+        <span className="text-neutral-600 normal-case tracking-normal font-normal">
+          {min} – {max} kg
+        </span>
+      </div>
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full">
+        <path d={path} stroke="#737373" fill="none" strokeWidth="1.5" />
+        {points.map((p, i) => (
+          <circle
+            key={i}
+            cx={p.x}
+            cy={p.y}
+            r={isPR[i] ? 3.5 : 2.5}
+            fill={isPR[i] ? "#22c55e" : "#a3a3a3"}
+          />
+        ))}
+      </svg>
+    </div>
   );
 }
