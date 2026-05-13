@@ -647,8 +647,9 @@ function AddSheet({
     debounce.current = setTimeout(async () => {
       setSearching(true);
       let q = supabase.from("exercise_library").select("id,name,primary_muscles,equipment,is_custom").limit(20);
-      if (search.trim()) {
-        q = q.ilike("name", `%${search.trim()}%`);
+      const words = search.trim().split(/\s+/).filter(Boolean);
+      if (words.length > 0) {
+        for (const word of words) q = q.ilike("name", `%${word}%`);
       } else {
         const muscles = TYPE_MUSCLES[type] ?? [];
         if (muscles.length > 0) q = q.overlaps("primary_muscles", muscles);
