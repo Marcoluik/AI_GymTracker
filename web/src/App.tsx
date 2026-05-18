@@ -10,6 +10,7 @@ import {
 import { useAuth } from "./hooks/useAuth";
 import { supabase, ALLOWED_EMAIL } from "./lib/supabase";
 import Login from "./pages/Login";
+import ResetPassword from "./pages/ResetPassword";
 import Program from "./pages/Program";
 import Workouts from "./pages/Workouts";
 import WorkoutDetail from "./pages/WorkoutDetail";
@@ -24,7 +25,7 @@ import {
 } from "./components/icons";
 
 export default function App() {
-  const { session, loading, email } = useAuth();
+  const { session, loading, email, recoveryMode, exitRecovery } = useAuth();
 
   if (loading) {
     return (
@@ -32,6 +33,12 @@ export default function App() {
         Loading…
       </div>
     );
+  }
+
+  // Password recovery: user came from a reset email — let them set a new password
+  // before we route them anywhere else.
+  if (recoveryMode) {
+    return <ResetPassword onDone={exitRecovery} />;
   }
 
   if (!session) {
@@ -78,7 +85,7 @@ function Layout() {
 
   return (
     <div className="flex flex-col h-full max-w-2xl mx-auto">
-      <header className="sticky top-0 z-30 flex items-center justify-between px-4 h-14 bg-neutral-950/85 backdrop-blur-md border-b border-neutral-800 shrink-0 pt-[env(safe-area-inset-top)]">
+      <header className="sticky top-0 z-30 flex items-center justify-between px-4 bg-neutral-950/85 backdrop-blur-md border-b border-neutral-800 shrink-0 h-[calc(env(safe-area-inset-top)+3.5rem)] pt-[env(safe-area-inset-top)]">
         <h1 className="text-base font-semibold tracking-tight">
           {pageTitle(location.pathname)}
         </h1>

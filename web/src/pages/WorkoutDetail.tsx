@@ -108,6 +108,7 @@ export default function WorkoutDetail() {
 
   const [editing, setEditing] = useState(false);
   const [editedNotes, setEditedNotes] = useState("");
+  const [editedDate, setEditedDate] = useState("");
   const [editedSets, setEditedSets] = useState<Record<string, EditedSet>>({});
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -175,6 +176,7 @@ export default function WorkoutDetail() {
 
   function startEditing() {
     setEditedNotes(workout?.notes ?? "");
+    setEditedDate(workout?.date ?? "");
     const map: Record<string, EditedSet> = {};
     for (const s of sets) {
       map[s.id] = {
@@ -196,9 +198,13 @@ export default function WorkoutDetail() {
     if (!workout) return;
     setSaving(true);
     try {
+      const datePatch =
+        /^\d{4}-\d{2}-\d{2}$/.test(editedDate) && editedDate !== workout.date
+          ? { date: editedDate }
+          : {};
       await supabase
         .from("workouts")
-        .update({ notes: editedNotes.trim() || null })
+        .update({ notes: editedNotes.trim() || null, ...datePatch })
         .eq("id", workout.id);
 
       for (const s of sets) {
@@ -348,17 +354,30 @@ export default function WorkoutDetail() {
       )}
 
       {editing ? (
-        <div className="p-3 rounded-xl bg-neutral-900 border border-neutral-800">
-          <p className="text-[11px] uppercase tracking-wider font-semibold text-neutral-500 mb-1">
-            Notes
-          </p>
-          <textarea
-            value={editedNotes}
-            onChange={(e) => setEditedNotes(e.target.value)}
-            placeholder="No notes"
-            rows={2}
-            className="w-full bg-transparent text-sm text-neutral-100 placeholder-neutral-600 resize-none outline-none"
-          />
+        <div className="space-y-2">
+          <div className="p-3 rounded-xl bg-neutral-900 border border-neutral-800">
+            <p className="text-[11px] uppercase tracking-wider font-semibold text-neutral-500 mb-1">
+              Date
+            </p>
+            <input
+              type="date"
+              value={editedDate}
+              onChange={(e) => setEditedDate(e.target.value)}
+              className="w-full bg-transparent text-sm text-neutral-100 outline-none"
+            />
+          </div>
+          <div className="p-3 rounded-xl bg-neutral-900 border border-neutral-800">
+            <p className="text-[11px] uppercase tracking-wider font-semibold text-neutral-500 mb-1">
+              Notes
+            </p>
+            <textarea
+              value={editedNotes}
+              onChange={(e) => setEditedNotes(e.target.value)}
+              placeholder="No notes"
+              rows={2}
+              className="w-full bg-transparent text-sm text-neutral-100 placeholder-neutral-600 resize-none outline-none"
+            />
+          </div>
         </div>
       ) : (
         workout.notes && <Box label="Notes">{workout.notes}</Box>

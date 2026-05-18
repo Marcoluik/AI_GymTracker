@@ -20,7 +20,7 @@ const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-const CLAUDE_MODEL = "claude-sonnet-4-5";
+const CLAUDE_MODEL = "claude-haiku-4-5";
 const VALID_TYPES = ["chest", "back", "legs", "abs", "run"] as const;
 type WorkoutType = typeof VALID_TYPES[number];
 
@@ -37,9 +37,22 @@ CORE RULES
 - Exercise skipped → output default_sets entries, each with skipped:true, weight_kg:null, reps:null, is_deviation:true.
 - New exercise the user added (not in program) → include it, every set is_deviation:true.
 - Always include every program exercise (default or actual).
+
+EXERCISE NAMING (CRITICAL)
+- For program exercises, use the exact name from the base program.
+- For deviations / substitutions / new exercises, look at the "Exercise library" list provided below the program. Pick the matching id and use it verbatim as exercise_name. The user may write in mixed languages (e.g. Danish, English), use shorthand, or describe the movement in their own words — use your understanding of exercise terminology to find the right match. Examples:
+  · "tæt greb rows bend over" → bent_over_close_grip_pulldown or similar from list
+  · "incline DB press" → incline_dumbbell_press
+  · "cable curls" → cable_curl
+- Only invent a new snake_case name if NOTHING in the library is a reasonable match. Inventing should be rare.
 - For BODYWEIGHT exercises with added load: the weight is the EXTRA load only (belt/vest/plate). Never log total body weight.
 - For TIMED exercises (anything with "plank" or "hold" in the name): the "reps" field represents SECONDS held, not rep count. "plank 75s" → reps:75.
 - Notes, feelings, observations → "notes" field on the workout. Anything ambiguous → put verbatim into notes, do not guess.
+
+DATE
+- The "Date:" given to you is when the user is logging — usually today. If the user's message references a different date ("yesterday", "last Tuesday", "11 may", "May 11th", "i 11. maj", "i går"), compute that real calendar date and put it in the output "date" field as YYYY-MM-DD.
+- "i går" / "yesterday" = input date minus 1 day. Day names ("last Tuesday") = the most recent past Tuesday before the input date.
+- Otherwise just echo the input date.
 
 OUTPUT FORMAT (strict)
 {
@@ -115,6 +128,48 @@ function formatProgramLine(p: ProgramRow): string {
       p.default_weight_kg === null ? "bodyweight" : `${p.default_weight_kg}kg`;
   }
   return `- ${p.exercise_name}: ${sets} sets × ${repsUnit} @ ${weightPart}`;
+}
+
+/** Muscles that "belong" to each workout type — used to filter the library
+ *  list we send to Claude (so we don't shove all 873 exercises into the prompt). */
+const TYPE_MUSCLES: Record<WorkoutType, string[]> = {
+  chest: ["chest", "shoulders", "triceps"],
+  back: ["lats", "middle back", "lower back", "traps", "biceps"],
+  legs: ["quadriceps", "hamstrings", "glutes", "calves"],
+  abs: ["abdominals", "obliques"],
+  run: [],
+};
+
+/** Fetch relevant library exercises for this workout type, formatted for the prompt. */
+async function fetchLibraryOptions(
+  supabase: SupabaseClient,
+  type: WorkoutType,
+): Promise<string> {
+  const muscles = TYPE_MUSCLES[type];
+  if (muscles.length === 0) return "";
+
+  const { data } = await supabase
+    .from("exercise_library")
+    .select("id, name")
+    .overlaps("primary_muscles", muscles)
+    .order("name");
+
+  if (!data || data.length === 0) return "";
+  return data.map((e: { id: string; name: string }) => `${e.id} — ${e.name}`).join("\n");
+}
+
+/** Verify Claude's chosen exercise_name is a real library id. If yes, leave it.
+ *  If no, leave it (becomes a custom). Just a safety log. */
+async function verifyLibraryIds(
+  supabase: SupabaseClient,
+  candidates: string[],
+): Promise<Set<string>> {
+  if (candidates.length === 0) return new Set();
+  const { data } = await supabase
+    .from("exercise_library")
+    .select("id")
+    .in("id", candidates);
+  return new Set((data ?? []).map((r: { id: string }) => r.id));
 }
 
 async function fetchProgram(
@@ -233,8 +288,12 @@ async function logViaClaude(
 ): Promise<{ workout_id: string; parsed: unknown }> {
   let programRows: ProgramRow[] = [];
   let programText = "(this is a run, no exercises)";
+  let libraryText = "";
   if (type !== "run") {
-    programRows = await fetchProgram(supabase, type);
+    [programRows, libraryText] = await Promise.all([
+      fetchProgram(supabase, type),
+      fetchLibraryOptions(supabase, type),
+    ]);
     programText = programRows.map(formatProgramLine).join("\n");
   }
 
@@ -246,7 +305,7 @@ Date: ${date}
 
 Base program:
 ${programText}
-${lastSession ? `\n${lastSession}\n` : ""}
+${libraryText ? `\nExercise library (use the id on the left when picking a deviation/substitution):\n${libraryText}\n` : ""}${lastSession ? `\n${lastSession}\n` : ""}
 User's message:
 ${userMessage}`;
 
@@ -331,14 +390,34 @@ ${userMessage}`;
     if (error) throw new Error(`Failed to insert run: ${error.message}`);
   } else if (Array.isArray(parsed.exercises) && parsed.exercises.length > 0) {
     const programByName = new Map(programRows.map((p) => [p.exercise_name, p]));
+
+    // Sanity check: log which of Claude's non-program names are real library ids
+    // vs which fell through (will be treated as customs).
+    const nonProgram = [
+      ...new Set(
+        parsed.exercises
+          .map((e) => e.exercise_name)
+          .filter((n) => !programByName.has(n)),
+      ),
+    ];
+    if (nonProgram.length > 0) {
+      const recognized = await verifyLibraryIds(supabase, nonProgram);
+      for (const name of nonProgram) {
+        console.log(
+          `[log-workout] deviation "${name}" → ${recognized.has(name) ? "library hit" : "custom (no library match)"}`,
+        );
+      }
+    }
+
     const rows: SetInsert[] = [];
     for (const ex of parsed.exercises) {
+      const finalName = ex.exercise_name;
       const sets = Array.isArray(ex.sets) ? ex.sets : null;
       if (sets && sets.length > 0) {
         sets.forEach((s, i) => {
           rows.push({
             workout_id: workout.id,
-            exercise_name: ex.exercise_name,
+            exercise_name: finalName,
             weight_kg: s.skipped ? null : (s.weight_kg ?? null),
             reps: s.skipped ? null : (s.reps ?? null),
             set_number: i + 1,
@@ -353,7 +432,7 @@ ${userMessage}`;
         for (let i = 0; i < defSets; i++) {
           rows.push({
             workout_id: workout.id,
-            exercise_name: ex.exercise_name,
+            exercise_name: finalName,
             weight_kg: ex.skipped ? null : (ex.weight_kg ?? null),
             reps: ex.skipped ? null : defReps,
             set_number: i + 1,

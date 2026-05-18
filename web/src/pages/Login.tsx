@@ -6,6 +6,7 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [resetSent, setResetSent] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -14,6 +15,21 @@ export default function Login() {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) setError(error.message);
     setSubmitting(false);
+  }
+
+  async function sendReset() {
+    if (!email) {
+      setError("Type your email first, then click reset.");
+      return;
+    }
+    setSubmitting(true);
+    setError("");
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin,
+    });
+    setSubmitting(false);
+    if (error) setError(error.message);
+    else setResetSent(true);
   }
 
   return (
@@ -52,6 +68,19 @@ export default function Login() {
           {submitting ? "Signing in…" : "Sign in"}
         </button>
         {error && <p className="text-red-400 text-sm text-center">{error}</p>}
+        {resetSent && (
+          <p className="text-emerald-400 text-sm text-center">
+            Reset email sent to {email}. Click the link, then set a new password.
+          </p>
+        )}
+        <button
+          type="button"
+          onClick={sendReset}
+          disabled={submitting}
+          className="block w-full text-center text-xs text-neutral-500 hover:text-neutral-300 pt-2"
+        >
+          Forgot password?
+        </button>
       </form>
     </div>
   );
