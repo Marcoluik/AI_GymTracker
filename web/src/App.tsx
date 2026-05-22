@@ -87,26 +87,26 @@ function Layout() {
 
   return (
     <div className="flex flex-col h-full max-w-2xl mx-auto">
-      <header className="sticky top-0 z-30 flex items-center justify-between px-4 bg-neutral-950/85 backdrop-blur-md border-b border-neutral-800 shrink-0 h-[calc(env(safe-area-inset-top)+3.5rem)] pt-[env(safe-area-inset-top)]">
+      <header className="flex items-center justify-between px-4 bg-neutral-950 border-b border-neutral-800 shrink-0 h-[calc(env(safe-area-inset-top)+3.5rem)] pt-[env(safe-area-inset-top)]">
         <h1 className="text-base font-semibold tracking-tight">
           {pageTitle(location.pathname)}
         </h1>
         <button
           onClick={signOut}
-          className="w-10 h-10 -mr-2 flex items-center justify-center rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 active:bg-neutral-700"
+          className="w-11 h-11 -mr-2 flex items-center justify-center rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 active:bg-neutral-700"
           aria-label="Sign out"
         >
           <LogOutIcon className="w-5 h-5" />
         </button>
       </header>
-      <main className="flex-1 overflow-y-auto px-4 pt-4 pb-[calc(env(safe-area-inset-bottom)+5.5rem)]">
+      <main className="flex-1 overflow-y-auto overscroll-contain px-4 pt-4 pb-4">
         <Outlet />
       </main>
       <nav
         aria-label="Primary"
-        className="fixed bottom-0 inset-x-0 z-40 bg-neutral-950/90 backdrop-blur-md border-t border-neutral-800 pb-[env(safe-area-inset-bottom)]"
+        className="shrink-0 bg-neutral-950 border-t border-neutral-800 pb-[env(safe-area-inset-bottom)]"
       >
-        <div className="max-w-2xl mx-auto flex">
+        <div className="flex">
           <Tab to="/program" label="Program" icon={<ListIcon />} />
           <Tab to="/workouts" label="Workouts" icon={<CalendarIcon />} />
           <Tab to="/trends" label="Trends" icon={<BarChartIcon />} />
