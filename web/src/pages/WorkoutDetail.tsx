@@ -178,19 +178,48 @@ export default function WorkoutDetail() {
     return prev !== undefined && s.weight_kg > prev;
   }
 
-  // Fetch library images for the exercises used in this workout
+  // Fetch library images for the exercises used in this workout. Custom
+  // exercises in the program have exercise_name = "machine_hip_thrust" but
+  // library.id = "machine_hip_thrust_custom_<timestamp>" — so direct id
+  // lookup misses. We bridge via program.exercise_id for those.
   useEffect(() => {
     if (sets.length === 0) return;
     (async () => {
       const exerciseNames = [...new Set(sets.map((s) => s.exercise_name))];
-      const { data } = await supabase
+      const map: Record<string, string[]> = {};
+
+      const { data: direct } = await supabase
         .from("exercise_library")
         .select("id, images")
         .in("id", exerciseNames);
-      const map: Record<string, string[]> = {};
-      for (const r of (data ?? []) as { id: string; images: string[] | null }[]) {
+      for (const r of (direct ?? []) as { id: string; images: string[] | null }[]) {
         if (r.images && r.images.length > 0) map[r.id] = r.images;
       }
+
+      const missing = exerciseNames.filter((n) => !map[n]);
+      if (missing.length > 0) {
+        const { data: progRows } = await supabase
+          .from("program")
+          .select("exercise_name, exercise_id")
+          .in("exercise_name", missing)
+          .not("exercise_id", "is", null);
+        const progList = (progRows ?? []) as { exercise_name: string; exercise_id: string }[];
+        const libIds = [...new Set(progList.map((p) => p.exercise_id))];
+        if (libIds.length > 0) {
+          const { data: libRows } = await supabase
+            .from("exercise_library")
+            .select("id, images")
+            .in("id", libIds);
+          const libMap = new Map(
+            ((libRows ?? []) as { id: string; images: string[] | null }[]).map((r) => [r.id, r.images]),
+          );
+          for (const p of progList) {
+            const imgs = libMap.get(p.exercise_id);
+            if (imgs && imgs.length > 0) map[p.exercise_name] = imgs;
+          }
+        }
+      }
+
       setLibraryImages(map);
     })();
   }, [sets]);
