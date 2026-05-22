@@ -3,6 +3,9 @@ import { useParams, Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { ChevronLeftIcon } from "../components/icons";
 
+const IMG_BASE =
+  "https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/exercises/";
+
 type SetRow = {
   weight_kg: number | null;
   reps: number | null;
@@ -68,28 +71,48 @@ export default function ExerciseDetail() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [bodyWeights, setBodyWeights] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
-  const [libraryMatch, setLibraryMatch] = useState<{ name: string; primary_muscles: string[] } | null>(null);
+  const [libraryMatch, setLibraryMatch] = useState<{ name: string; primary_muscles: string[]; images: string[] | null } | null>(null);
+  const [chartMode, setChartMode] = useState<"max" | "e1rm">("max");
 
   useEffect(() => {
     if (!exerciseName) return;
     (async () => {
       setLoading(true);
-      const [{ data: setRows }, { data: libRow }, { data: bwRows }] = await Promise.all([
+      const [{ data: setRows }, { data: libRow }, { data: bwRows }, { data: progRow }] = await Promise.all([
         supabase
           .from("sets")
           .select("weight_kg, reps, skipped, workout_id")
           .eq("exercise_name", exerciseName),
         supabase
           .from("exercise_library")
-          .select("name, primary_muscles")
+          .select("name, primary_muscles, images")
           .eq("id", exerciseName)
           .maybeSingle(),
         supabase.from("body_weights").select("date, kg"),
+        supabase
+          .from("program")
+          .select("exercise_id")
+          .eq("exercise_name", exerciseName)
+          .not("exercise_id", "is", null)
+          .limit(1)
+          .maybeSingle(),
       ]);
       const bwMap = new Map<string, number>();
       for (const r of (bwRows ?? []) as { date: string; kg: number }[]) bwMap.set(r.date, r.kg);
       setBodyWeights(bwMap);
-      setLibraryMatch(libRow as { name: string; primary_muscles: string[] } | null);
+
+      // Direct id match? Otherwise resolve via program.exercise_id (handles
+      // custom exercises where program.exercise_name and library.id differ).
+      let resolvedLib = libRow as { name: string; primary_muscles: string[]; images: string[] | null } | null;
+      if (!resolvedLib && progRow?.exercise_id) {
+        const { data } = await supabase
+          .from("exercise_library")
+          .select("name, primary_muscles, images")
+          .eq("id", progRow.exercise_id)
+          .maybeSingle();
+        resolvedLib = data as typeof resolvedLib;
+      }
+      setLibraryMatch(resolvedLib);
 
       const sets = (setRows ?? []) as SetRow[];
       if (sets.length === 0) {
@@ -199,6 +222,20 @@ export default function ExerciseDetail() {
         )}
       </header>
 
+      {libraryMatch?.images && libraryMatch.images.length > 0 && (
+        <div className="flex gap-2 overflow-x-auto -mx-4 px-4 scrollbar-none">
+          {libraryMatch.images.map((img, i) => (
+            <img
+              key={i}
+              src={`${IMG_BASE}${img}`}
+              alt=""
+              loading="lazy"
+              className="h-32 w-auto rounded-xl shrink-0 object-cover bg-neutral-800"
+            />
+          ))}
+        </div>
+      )}
+
       {!stats ? (
         <p className="text-sm text-neutral-500 py-6 text-center">
           No completed sets logged yet.
@@ -225,16 +262,32 @@ export default function ExerciseDetail() {
             </div>
           )}
 
-          {/* e1RM chart with optional BW overlay */}
+          {/* Strength chart — max weight by default, toggle for est. 1RM */}
           {sessions.length >= 2 && (
             <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-4">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="font-semibold text-sm">1-rep max (estimated)</h2>
-                <span className="text-[10px] text-neutral-500">
-                  last {Math.min(sessions.length, 20)} sessions
-                </span>
+                <div>
+                  <h2 className="font-semibold text-sm">
+                    {chartMode === "max" ? "Max weight per session" : "Est. 1-rep max"}
+                  </h2>
+                  <p className="text-[10px] text-neutral-500 mt-0.5">
+                    {chartMode === "max"
+                      ? "heaviest set that session"
+                      : "weight × (1 + reps/30)"}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setChartMode((m) => (m === "max" ? "e1rm" : "max"))}
+                  className="text-[10px] uppercase tracking-wider font-semibold px-2 py-1 rounded bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
+                >
+                  {chartMode === "max" ? "Show 1RM" : "Show max"}
+                </button>
               </div>
-              <E1RMChart sessions={sessions.slice(-20)} bodyWeights={bodyWeights} />
+              <StrengthChart
+                sessions={sessions.slice(-20)}
+                bodyWeights={bodyWeights}
+                mode={chartMode}
+              />
             </div>
           )}
 
@@ -300,26 +353,29 @@ function StatTile({ label, value }: { label: string; value: string }) {
   );
 }
 
-function E1RMChart({
+function StrengthChart({
   sessions,
   bodyWeights,
+  mode,
 }: {
   sessions: Session[];
   bodyWeights: Map<string, number>;
+  mode: "max" | "e1rm";
 }) {
   const w = 320, h = 120, pad = 12;
   const innerW = w - pad * 2;
   const innerH = h - pad * 2;
 
-  const values = sessions.map((s) => s.bestE1RM);
+  const values = sessions.map((s) => (mode === "max" ? s.maxWeight : s.bestE1RM));
   const min = Math.min(...values);
   const max = Math.max(...values);
   const range = Math.max(max - min, 1);
 
   const points = sessions.map((s, i) => {
+    const v = mode === "max" ? s.maxWeight : s.bestE1RM;
     const x = pad + (i / Math.max(sessions.length - 1, 1)) * innerW;
-    const y = pad + (1 - (s.bestE1RM - min) / range) * innerH;
-    return { x, y, value: s.bestE1RM };
+    const y = pad + (1 - (v - min) / range) * innerH;
+    return { x, y, value: v };
   });
 
   let runMax = -Infinity;
