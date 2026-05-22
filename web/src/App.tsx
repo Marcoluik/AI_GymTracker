@@ -14,6 +14,7 @@ import ResetPassword from "./pages/ResetPassword";
 import Program from "./pages/Program";
 import Workouts from "./pages/Workouts";
 import WorkoutDetail from "./pages/WorkoutDetail";
+import ExerciseDetail from "./pages/ExerciseDetail";
 import Trends from "./pages/Trends";
 import Library from "./pages/Library";
 import {
@@ -60,6 +61,7 @@ export default function App() {
         <Route path="/program" element={<Program />} />
         <Route path="/workouts" element={<Workouts />} />
         <Route path="/workouts/:id" element={<WorkoutDetail />} />
+        <Route path="/exercise/:name" element={<ExerciseDetail />} />
         <Route path="/trends" element={<Trends />} />
         <Route path="/library" element={<Library />} />
         <Route path="*" element={<Navigate to="/program" replace />} />

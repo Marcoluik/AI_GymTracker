@@ -27,6 +27,9 @@ type Run = {
   notes: string | null;
 };
 
+const LIBRARY_IMG_BASE =
+  "https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/exercises/";
+
 const TYPE_STYLES: Record<string, string> = {
   chest: "bg-sky-500/15 text-sky-300 ring-1 ring-inset ring-sky-500/30",
   back: "bg-violet-500/15 text-violet-300 ring-1 ring-inset ring-violet-500/30",
@@ -114,6 +117,7 @@ export default function WorkoutDetail() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [priorMax, setPriorMax] = useState<Record<string, number>>({});
+  const [libraryImages, setLibraryImages] = useState<Record<string, string[]>>({});
 
   useEffect(() => {
     if (!id) return;
@@ -174,6 +178,23 @@ export default function WorkoutDetail() {
     return prev !== undefined && s.weight_kg > prev;
   }
 
+  // Fetch library images for the exercises used in this workout
+  useEffect(() => {
+    if (sets.length === 0) return;
+    (async () => {
+      const exerciseNames = [...new Set(sets.map((s) => s.exercise_name))];
+      const { data } = await supabase
+        .from("exercise_library")
+        .select("id, images")
+        .in("id", exerciseNames);
+      const map: Record<string, string[]> = {};
+      for (const r of (data ?? []) as { id: string; images: string[] | null }[]) {
+        if (r.images && r.images.length > 0) map[r.id] = r.images;
+      }
+      setLibraryImages(map);
+    })();
+  }, [sets]);
+
   function startEditing() {
     setEditedNotes(workout?.notes ?? "");
     setEditedDate(workout?.date ?? "");
@@ -202,11 +223,13 @@ export default function WorkoutDetail() {
         /^\d{4}-\d{2}-\d{2}$/.test(editedDate) && editedDate !== workout.date
           ? { date: editedDate }
           : {};
-      await supabase
+      const { error: wErr } = await supabase
         .from("workouts")
         .update({ notes: editedNotes.trim() || null, ...datePatch })
         .eq("id", workout.id);
+      if (wErr) { alert(`Couldn't save workout: ${wErr.message}`); return; }
 
+      const failures: string[] = [];
       for (const s of sets) {
         const e = editedSets[s.id];
         if (!e) continue;
@@ -217,13 +240,17 @@ export default function WorkoutDetail() {
           (wkg ?? null) !== s.weight_kg ||
           (rps ?? null) !== s.reps;
         if (wasChanged) {
-          await supabase.from("sets").update({
+          const { error: sErr } = await supabase.from("sets").update({
             weight_kg: e.skipped ? null : (isNaN(wkg as number) ? null : wkg),
             reps: e.skipped ? null : (isNaN(rps as number) ? null : rps),
             skipped: e.skipped,
             is_deviation: true,
           }).eq("id", s.id);
+          if (sErr) failures.push(`set ${s.set_number ?? "?"}: ${sErr.message}`);
         }
+      }
+      if (failures.length > 0) {
+        alert(`Some sets didn't save:\n${failures.join("\n")}`);
       }
 
       const [{ data: w }, { data: s }] = await Promise.all([
@@ -246,7 +273,12 @@ export default function WorkoutDetail() {
   async function deleteWorkout() {
     if (!workout) return;
     setDeleting(true);
-    await supabase.from("workouts").delete().eq("id", workout.id);
+    const { error } = await supabase.from("workouts").delete().eq("id", workout.id);
+    if (error) {
+      alert(`Couldn't delete: ${error.message}`);
+      setDeleting(false);
+      return;
+    }
     navigate("/workouts");
   }
 
@@ -413,6 +445,7 @@ export default function WorkoutDetail() {
                   setEditedSets((prev) => ({ ...prev, [setId]: v }))
                 }
                 isPR={isPR}
+                images={libraryImages[name]}
               />
             ))}
           </div>
@@ -465,6 +498,7 @@ function ExerciseBlock({
   editedSets,
   onEditChange,
   isPR,
+  images,
 }: {
   name: string;
   rows: SetRow[];
@@ -472,6 +506,7 @@ function ExerciseBlock({
   editedSets: Record<string, EditedSet>;
   onEditChange: (setId: string, v: EditedSet) => void;
   isPR: (s: SetRow) => boolean;
+  images?: string[];
 }) {
   // When editing, expanded by default. Otherwise collapsed.
   const [expanded, setExpanded] = useState(editing);
@@ -530,6 +565,20 @@ function ExerciseBlock({
       </button>
 
       {expanded && (
+        <>
+        {images && images.length > 0 && (
+          <div className="flex gap-2 overflow-x-auto px-4 py-3 border-t border-neutral-800/70 scrollbar-none">
+            {images.map((img, i) => (
+              <img
+                key={i}
+                src={`${LIBRARY_IMG_BASE}${img}`}
+                alt=""
+                loading="lazy"
+                className="h-24 w-auto rounded-lg shrink-0 object-cover bg-neutral-800"
+              />
+            ))}
+          </div>
+        )}
         <ul className="divide-y divide-neutral-800/70 border-t border-neutral-800/70">
           {rows.map((r, i) => (
             <li
@@ -569,6 +618,13 @@ function ExerciseBlock({
             </li>
           ))}
         </ul>
+        <Link
+          to={`/exercise/${encodeURIComponent(name)}`}
+          className="block text-center text-[11px] font-medium text-neutral-500 hover:text-white py-2 border-t border-neutral-800/70"
+        >
+          View full progress →
+        </Link>
+        </>
       )}
     </div>
   );

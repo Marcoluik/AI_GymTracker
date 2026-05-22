@@ -115,28 +115,42 @@ export default function Library() {
 
   useEffect(() => {
     if (debounce.current) clearTimeout(debounce.current);
-    debounce.current = setTimeout(() => fetchExercises(), 250);
-    return () => { if (debounce.current) clearTimeout(debounce.current); };
+    let cancelled = false;
+    debounce.current = setTimeout(async () => {
+      setLoading(true);
+      let q = supabase
+        .from("exercise_library")
+        .select("*", { count: "exact" })
+        .order("name")
+        .limit(50);
+
+      const words = search.trim().split(/\s+/).filter(Boolean);
+      for (const word of words) q = q.ilike("name", `%${word}%`);
+      if (muscleFilter) q = q.contains("primary_muscles", [muscleFilter]);
+
+      const { data, count } = await q;
+      if (cancelled) return;
+      setExercises((data as Exercise[]) ?? []);
+      if (count !== null) setTotal(count);
+      setLoading(false);
+    }, 250);
+    return () => {
+      cancelled = true;
+      if (debounce.current) clearTimeout(debounce.current);
+    };
   }, [search, muscleFilter]);
 
   async function fetchExercises() {
+    // Manual re-fetch (used after add/delete)
     setLoading(true);
     let q = supabase
       .from("exercise_library")
       .select("*", { count: "exact" })
       .order("name")
       .limit(50);
-
-    // Word-by-word search: "cable curls" matches "Cable Curl", "Cable Curls", etc.
     const words = search.trim().split(/\s+/).filter(Boolean);
-    for (const word of words) {
-      q = q.ilike("name", `%${word}%`);
-    }
-
-    if (muscleFilter) {
-      q = q.contains("primary_muscles", [muscleFilter]);
-    }
-
+    for (const word of words) q = q.ilike("name", `%${word}%`);
+    if (muscleFilter) q = q.contains("primary_muscles", [muscleFilter]);
     const { data, count } = await q;
     setExercises((data as Exercise[]) ?? []);
     if (count !== null) setTotal(count);

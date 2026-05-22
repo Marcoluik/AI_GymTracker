@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
-import { ChevronRightIcon, CalendarIcon } from "../components/icons";
+import { ChevronRightIcon, CalendarIcon, SearchIcon } from "../components/icons";
 
 type Workout = {
   id: string;
@@ -95,38 +95,102 @@ function TypePill({ type }: { type: string }) {
   );
 }
 
+const PAGE_SIZE = 100;
+
 export default function Workouts() {
   const [workouts, setWorkouts] = useState<Workout[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [debouncedSearch, setDebouncedSearch] = useState("");
 
   useEffect(() => {
+    if (debounce.current) clearTimeout(debounce.current);
+    debounce.current = setTimeout(() => setDebouncedSearch(search.trim()), 250);
+    return () => { if (debounce.current) clearTimeout(debounce.current); };
+  }, [search]);
+
+  useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const { data, error } = await supabase
+      setLoading(true);
+      let q = supabase
         .from("workouts")
         .select("*")
         .order("date", { ascending: false })
         .order("created_at", { ascending: false })
-        .limit(200);
+        .range(0, PAGE_SIZE - 1);
+      if (debouncedSearch) {
+        // Match notes, raw_message, or workout_type
+        q = q.or(
+          `notes.ilike.%${debouncedSearch}%,raw_message.ilike.%${debouncedSearch}%,workout_type.ilike.%${debouncedSearch}%`,
+        );
+      }
+      const { data, error } = await q;
+      if (cancelled) return;
       if (error) setError(error.message);
-      else setWorkouts(data || []);
+      else {
+        setWorkouts(data || []);
+        setHasMore((data?.length ?? 0) === PAGE_SIZE);
+      }
       setLoading(false);
     })();
-  }, []);
+    return () => { cancelled = true; };
+  }, [debouncedSearch]);
+
+  async function loadMore() {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    let q = supabase
+      .from("workouts")
+      .select("*")
+      .order("date", { ascending: false })
+      .order("created_at", { ascending: false })
+      .range(workouts.length, workouts.length + PAGE_SIZE - 1);
+    if (debouncedSearch) {
+      q = q.or(
+        `notes.ilike.%${debouncedSearch}%,raw_message.ilike.%${debouncedSearch}%,workout_type.ilike.%${debouncedSearch}%`,
+      );
+    }
+    const { data } = await q;
+    if (data) {
+      setWorkouts((prev) => [...prev, ...data]);
+      setHasMore(data.length === PAGE_SIZE);
+    }
+    setLoadingMore(false);
+  }
+
+  const searchBar = (
+    <div className="relative">
+      <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-500" />
+      <input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search workouts…"
+        className="w-full bg-neutral-900 border border-neutral-800 rounded-xl pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:border-neutral-600 placeholder-neutral-600"
+      />
+    </div>
+  );
 
   if (loading)
     return (
-      <div className="space-y-2">
-        {[0, 1, 2, 3, 4].map((i) => (
-          <div
-            key={i}
-            className="h-16 rounded-xl bg-neutral-900/60 border border-neutral-900 animate-pulse"
-          />
-        ))}
+      <div className="space-y-4 pb-4">
+        {searchBar}
+        <div className="space-y-2">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <div
+              key={i}
+              className="h-16 rounded-xl bg-neutral-900/60 border border-neutral-900 animate-pulse"
+            />
+          ))}
+        </div>
       </div>
     );
   if (error) return <p className="text-red-400 text-sm">{error}</p>;
-  if (workouts.length === 0) return <EmptyState />;
+  if (workouts.length === 0 && !debouncedSearch) return <EmptyState />;
 
   const sessions = buildSessions(workouts);
 
@@ -141,7 +205,13 @@ export default function Workouts() {
 
   return (
     <div className="pb-4 space-y-6">
-      <CalendarHeatmap workouts={workouts} />
+      {searchBar}
+      {!debouncedSearch && <CalendarHeatmap workouts={workouts} />}
+      {workouts.length === 0 && debouncedSearch && (
+        <p className="text-center text-sm text-neutral-500 py-10">
+          No workouts match "{debouncedSearch}".
+        </p>
+      )}
       {groups.map((g) => (
         <section key={g.key}>
           <h2 className="text-[11px] uppercase tracking-[0.12em] font-semibold text-neutral-400 px-1 mb-2">
@@ -158,6 +228,15 @@ export default function Workouts() {
           </div>
         </section>
       ))}
+      {hasMore && (
+        <button
+          onClick={loadMore}
+          disabled={loadingMore}
+          className="w-full py-3 rounded-xl border border-neutral-800 bg-neutral-900 text-sm text-neutral-300 hover:bg-neutral-800/60 disabled:opacity-50"
+        >
+          {loadingMore ? "Loading…" : "Load older workouts"}
+        </button>
+      )}
     </div>
   );
 }

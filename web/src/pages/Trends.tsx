@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import Model, { type Muscle } from "react-body-highlighter";
 import { supabase } from "../lib/supabase";
 import { PlusIcon, TrashIcon, XIcon } from "../components/icons";
@@ -72,28 +73,514 @@ function buildModelData(recovery: Record<string, number>) {
 export default function Trends() {
   const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       const since = new Date(Date.now() - 14 * 86_400_000).toISOString().slice(0, 10);
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("workouts")
         .select("date, workout_type")
         .gte("date", since)
         .order("date", { ascending: false });
-      setWorkouts((data as WorkoutRow[]) ?? []);
+      if (cancelled) return;
+      if (error) setError(error.message);
+      else setWorkouts((data as WorkoutRow[]) ?? []);
       setLoading(false);
     })();
+    return () => { cancelled = true; };
   }, []);
 
   const recovery = calcRecovery(workouts);
 
+  if (error) {
+    return (
+      <div className="rounded-2xl border border-red-900/40 bg-red-950/20 p-4 text-sm text-red-300">
+        Couldn't load recovery data: {error}
+      </div>
+    );
+  }
+
   return (
     <div className="pb-4 space-y-4">
       <WeeklySummary />
+      <MostImproved />
+      <PRDashboard />
+      <WeeklyVolume />
+      <RunAnalytics />
       <MuscleRecovery recovery={recovery} loading={loading} />
       <BodyWeight />
       <ProgressPhotos />
+    </div>
+  );
+}
+
+// ── Most improved this month ──────────────────────────────────────────────────
+
+function MostImproved() {
+  const [items, setItems] = useState<{ name: string; current: number; delta: number }[] | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const today = new Date();
+      const thisMonthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
+      const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1).toISOString().slice(0, 10);
+
+      // Pull workouts from last 2 months
+      const { data: ws } = await supabase
+        .from("workouts")
+        .select("id, date")
+        .gte("date", lastMonthStart);
+      const wmap = new Map(((ws ?? []) as { id: string; date: string }[]).map((w) => [w.id, w.date]));
+      const ids = [...wmap.keys()];
+      if (ids.length === 0) { setItems([]); return; }
+
+      const { data: sets } = await supabase
+        .from("sets")
+        .select("exercise_name, weight_kg, reps, skipped, workout_id")
+        .in("workout_id", ids)
+        .eq("skipped", false)
+        .not("weight_kg", "is", null)
+        .gt("weight_kg", 0);
+      const rows = (sets ?? []) as {
+        exercise_name: string;
+        weight_kg: number;
+        reps: number | null;
+        skipped: boolean;
+        workout_id: string;
+      }[];
+
+      // Group: exercise → { thisMax, lastMax } best e1RM in each window
+      const stats = new Map<string, { thisMax: number; lastMax: number }>();
+      for (const r of rows) {
+        const date = wmap.get(r.workout_id);
+        if (!date) continue;
+        if (r.reps === null || r.reps <= 0) continue;
+        const est = e1rm(r.weight_kg, r.reps);
+        const cur = stats.get(r.exercise_name) ?? { thisMax: 0, lastMax: 0 };
+        if (date >= thisMonthStart) {
+          if (est > cur.thisMax) cur.thisMax = est;
+        } else {
+          if (est > cur.lastMax) cur.lastMax = est;
+        }
+        stats.set(r.exercise_name, cur);
+      }
+
+      const improvements = [...stats.entries()]
+        .filter(([, s]) => s.thisMax > 0 && s.lastMax > 0 && s.thisMax > s.lastMax)
+        .map(([name, s]) => ({ name, current: s.thisMax, delta: s.thisMax - s.lastMax }))
+        .sort((a, b) => b.delta - a.delta)
+        .slice(0, 3);
+
+      setItems(improvements);
+    })();
+  }, []);
+
+  if (items === null || items.length === 0) return null;
+
+  return (
+    <div className="rounded-2xl border border-neutral-800 bg-neutral-900 overflow-hidden">
+      <div className="px-4 pt-4 pb-3 border-b border-neutral-800">
+        <h2 className="font-semibold text-sm">Most improved this month</h2>
+        <p className="text-[11px] text-neutral-500 mt-0.5">based on estimated 1RM</p>
+      </div>
+      <div>
+        {items.map((p, i) => (
+          <Link
+            key={p.name}
+            to={`/exercise/${encodeURIComponent(p.name)}`}
+            className={`flex items-center gap-3 px-4 py-2.5 hover:bg-neutral-800/40 transition-colors ${
+              i < items.length - 1 ? "border-b border-neutral-800" : ""
+            }`}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="text-sm truncate">{labelizeName(p.name)}</div>
+              <div className="text-[10px] text-neutral-500">now ~{Math.round(p.current)} kg 1RM</div>
+            </div>
+            <span className="text-sm font-semibold text-emerald-400">
+              +{p.delta.toFixed(1)} <span className="text-[10px] text-neutral-500">kg</span>
+            </span>
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── PR dashboard ──────────────────────────────────────────────────────────────
+
+function e1rm(weight: number, reps: number): number {
+  if (reps <= 0 || weight <= 0) return 0;
+  if (reps === 1) return weight;
+  return weight * (1 + reps / 30);
+}
+
+function labelizeName(name: string): string {
+  const s = name.replace(/_/g, " ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+type PR = { exercise_name: string; weight: number; reps: number; e1rm: number };
+
+function PRDashboard() {
+  const [prs, setPrs] = useState<PR[] | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase
+        .from("sets")
+        .select("exercise_name, weight_kg, reps, skipped")
+        .eq("skipped", false)
+        .not("weight_kg", "is", null)
+        .gt("weight_kg", 0);
+      const rows = (data ?? []) as {
+        exercise_name: string;
+        weight_kg: number;
+        reps: number | null;
+        skipped: boolean;
+      }[];
+
+      const byExercise = new Map<string, PR>();
+      for (const r of rows) {
+        if (r.reps === null || r.reps <= 0) continue;
+        const est = e1rm(r.weight_kg, r.reps);
+        const cur = byExercise.get(r.exercise_name);
+        if (!cur || est > cur.e1rm) {
+          byExercise.set(r.exercise_name, {
+            exercise_name: r.exercise_name,
+            weight: r.weight_kg,
+            reps: r.reps,
+            e1rm: est,
+          });
+        }
+      }
+      const sorted = [...byExercise.values()].sort((a, b) => b.e1rm - a.e1rm);
+      setPrs(sorted);
+    })();
+  }, []);
+
+  if (prs === null)
+    return <div className="rounded-2xl border border-neutral-800 bg-neutral-900 h-32 animate-pulse" />;
+  if (prs.length === 0) return null;
+
+  const top = prs.slice(0, 8);
+
+  return (
+    <div className="rounded-2xl border border-neutral-800 bg-neutral-900 overflow-hidden">
+      <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-neutral-800">
+        <h2 className="font-semibold text-sm">Top PRs</h2>
+        <span className="text-[10px] text-neutral-500">est. 1RM</span>
+      </div>
+      <div>
+        {top.map((p, i) => (
+          <Link
+            key={p.exercise_name}
+            to={`/exercise/${encodeURIComponent(p.exercise_name)}`}
+            className={`flex items-center gap-3 px-4 py-2.5 hover:bg-neutral-800/40 transition-colors ${
+              i < top.length - 1 ? "border-b border-neutral-800" : ""
+            }`}
+          >
+            <span className="w-5 text-[11px] text-neutral-600 font-mono shrink-0">{i + 1}</span>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm truncate">{labelizeName(p.exercise_name)}</div>
+              <div className="text-[10px] text-neutral-500">
+                from {p.weight} kg × {p.reps}
+              </div>
+            </div>
+            <span className="text-sm font-semibold text-emerald-400 shrink-0">
+              {Math.round(p.e1rm)} <span className="text-[10px] text-neutral-500">kg</span>
+            </span>
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Run analytics ─────────────────────────────────────────────────────────────
+
+type RunRow = {
+  duration_minutes: number | null;
+  distance_km: number | null;
+  workout_id: string;
+};
+
+function RunAnalytics() {
+  const [data, setData] = useState<{
+    weeks: { weekStart: string; distance: number }[];
+    longest: number;
+    fastestPace: number | null;
+    thisMonth: number;
+    totalRuns: number;
+  } | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const WEEKS = 12;
+      const today = new Date();
+      today.setHours(12, 0, 0, 0);
+      const dayOfWeek = (today.getDay() + 6) % 7;
+      const startOfThisWeek = new Date(today.getTime() - dayOfWeek * 86_400_000);
+      const startDate = new Date(startOfThisWeek.getTime() - (WEEKS - 1) * 7 * 86_400_000);
+      const startStr = startDate.toISOString().slice(0, 10);
+
+      const { data: ws } = await supabase
+        .from("workouts")
+        .select("id, date")
+        .eq("workout_type", "run")
+        .gte("date", startStr);
+      const wlist = (ws ?? []) as { id: string; date: string }[];
+
+      // Pull all runs (not just this 12-week window) for "longest" / "totalRuns"
+      const { data: allRuns } = await supabase
+        .from("runs")
+        .select("duration_minutes, distance_km, workout_id");
+      const runs = (allRuns ?? []) as RunRow[];
+
+      const runById = new Map(runs.map((r) => [r.workout_id, r]));
+
+      // Initialise buckets
+      const buckets: { weekStart: string; distance: number }[] = [];
+      for (let i = 0; i < WEEKS; i++) {
+        buckets.push({
+          weekStart: new Date(startDate.getTime() + i * 7 * 86_400_000)
+            .toISOString()
+            .slice(0, 10),
+          distance: 0,
+        });
+      }
+      for (const w of wlist) {
+        const r = runById.get(w.id);
+        if (!r?.distance_km) continue;
+        const idx = Math.floor(
+          (new Date(`${w.date}T12:00:00`).getTime() - startDate.getTime()) /
+            (7 * 86_400_000),
+        );
+        if (idx >= 0 && idx < WEEKS) buckets[idx].distance += r.distance_km;
+      }
+
+      let longest = 0;
+      let fastestPace: number | null = null;
+      for (const r of runs) {
+        if (r.distance_km && r.distance_km > longest) longest = r.distance_km;
+        if (r.distance_km && r.duration_minutes && r.distance_km > 0) {
+          const pace = r.duration_minutes / r.distance_km;
+          if (fastestPace === null || pace < fastestPace) fastestPace = pace;
+        }
+      }
+
+      const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
+        .toISOString()
+        .slice(0, 10);
+      let thisMonth = 0;
+      for (const w of wlist) {
+        if (w.date >= monthStart) {
+          const r = runById.get(w.id);
+          if (r?.distance_km) thisMonth += r.distance_km;
+        }
+      }
+
+      setData({
+        weeks: buckets,
+        longest,
+        fastestPace,
+        thisMonth,
+        totalRuns: runs.length,
+      });
+    })();
+  }, []);
+
+  if (!data) return null;
+  if (data.totalRuns === 0) return null;
+
+  const maxWeek = Math.max(...data.weeks.map((w) => w.distance), 1);
+
+  return (
+    <div className="rounded-2xl border border-neutral-800 bg-neutral-900 overflow-hidden">
+      <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-neutral-800">
+        <div>
+          <h2 className="font-semibold text-sm">Runs</h2>
+          <p className="text-[11px] text-neutral-500 mt-0.5">last 12 weeks</p>
+        </div>
+        <span className="text-[10px] text-neutral-500">{data.totalRuns} total</span>
+      </div>
+
+      <div className="grid grid-cols-3 divide-x divide-neutral-800 border-b border-neutral-800">
+        <RunStat label="This month" value={`${data.thisMonth.toFixed(1)} km`} />
+        <RunStat label="Longest" value={`${data.longest.toFixed(1)} km`} />
+        <RunStat
+          label="Best pace"
+          value={
+            data.fastestPace !== null
+              ? `${Math.floor(data.fastestPace)}:${String(
+                  Math.round((data.fastestPace - Math.floor(data.fastestPace)) * 60),
+                ).padStart(2, "0")}/km`
+              : "—"
+          }
+        />
+      </div>
+
+      <div className="px-3 py-4">
+        <div className="flex items-end gap-1.5 h-20">
+          {data.weeks.map((w) => {
+            const heightPct = (w.distance / maxWeek) * 100;
+            return (
+              <div
+                key={w.weekStart}
+                className="flex-1 flex flex-col-reverse h-full"
+                title={`Week of ${w.weekStart}: ${w.distance.toFixed(1)} km`}
+              >
+                <div
+                  className="w-full rounded-sm bg-orange-500"
+                  style={{
+                    height: `${heightPct}%`,
+                    minHeight: w.distance > 0 ? "2px" : "0",
+                  }}
+                />
+              </div>
+            );
+          })}
+        </div>
+        <p className="text-[9px] text-neutral-600 mt-2 text-center">weekly distance</p>
+      </div>
+    </div>
+  );
+}
+
+function RunStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="px-3 py-3">
+      <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 mb-1">{label}</p>
+      <p className="text-base font-semibold">{value}</p>
+    </div>
+  );
+}
+
+// ── Weekly volume per workout type ────────────────────────────────────────────
+
+type WeekBucket = { weekStart: string; byType: Record<string, number> };
+
+const TYPE_BAR_BG: Record<string, string> = {
+  chest: "#0ea5e9",
+  back: "#8b5cf6",
+  legs: "#10b981",
+  abs: "#f43f5e",
+  run: "#f97316",
+};
+
+function WeeklyVolume() {
+  const [weeks, setWeeks] = useState<WeekBucket[] | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const WEEKS = 12;
+      const today = new Date();
+      today.setHours(12, 0, 0, 0);
+      const dayOfWeek = (today.getDay() + 6) % 7; // 0 = Monday
+      const startOfThisWeek = new Date(today.getTime() - dayOfWeek * 86_400_000);
+      const startDate = new Date(startOfThisWeek.getTime() - (WEEKS - 1) * 7 * 86_400_000);
+      const startStr = startDate.toISOString().slice(0, 10);
+
+      const { data: ws } = await supabase
+        .from("workouts")
+        .select("id, date, workout_type")
+        .gte("date", startStr);
+
+      const workoutMap = new Map(
+        ((ws ?? []) as { id: string; date: string; workout_type: string }[]).map((w) => [w.id, w]),
+      );
+      const ids = [...workoutMap.keys()];
+
+      let sets: { workout_id: string; weight_kg: number | null; reps: number | null; skipped: boolean }[] = [];
+      if (ids.length > 0) {
+        const { data } = await supabase
+          .from("sets")
+          .select("workout_id, weight_kg, reps, skipped")
+          .in("workout_id", ids);
+        sets = (data as typeof sets) ?? [];
+      }
+
+      // Initialise empty week buckets
+      const buckets: WeekBucket[] = [];
+      for (let i = 0; i < WEEKS; i++) {
+        const ws = new Date(startDate.getTime() + i * 7 * 86_400_000)
+          .toISOString()
+          .slice(0, 10);
+        buckets.push({ weekStart: ws, byType: {} });
+      }
+
+      // For each set, find its week + workout type, add volume
+      for (const s of sets) {
+        if (s.skipped) continue;
+        const w = workoutMap.get(s.workout_id);
+        if (!w) continue;
+        const wDate = new Date(`${w.date}T12:00:00`);
+        const weeksFromStart = Math.floor((wDate.getTime() - startDate.getTime()) / (7 * 86_400_000));
+        if (weeksFromStart < 0 || weeksFromStart >= WEEKS) continue;
+        const bucket = buckets[weeksFromStart];
+        const vol = (s.weight_kg ?? 0) * (s.reps ?? 0);
+        bucket.byType[w.workout_type] = (bucket.byType[w.workout_type] ?? 0) + vol;
+      }
+      setWeeks(buckets);
+    })();
+  }, []);
+
+  if (!weeks)
+    return <div className="rounded-2xl border border-neutral-800 bg-neutral-900 h-44 animate-pulse" />;
+
+  const totals = weeks.map((w) =>
+    Object.values(w.byType).reduce((sum, v) => sum + v, 0),
+  );
+  const max = Math.max(...totals, 1);
+  const typesPresent = [...new Set(weeks.flatMap((w) => Object.keys(w.byType)))];
+
+  return (
+    <div className="rounded-2xl border border-neutral-800 bg-neutral-900 overflow-hidden">
+      <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-neutral-800">
+        <div>
+          <h2 className="font-semibold text-sm">Weekly volume</h2>
+          <p className="text-[11px] text-neutral-500 mt-0.5">total kg lifted · last 12 weeks</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {typesPresent.map((t) => (
+            <span key={t} className="flex items-center gap-1 text-[9px] text-neutral-500">
+              <span className="w-2 h-2 rounded-sm" style={{ background: TYPE_BAR_BG[t] ?? "#525252" }} />
+              {t}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="px-3 py-4">
+        <div className="flex items-end gap-1.5 h-32">
+          {weeks.map((w, i) => {
+            const total = totals[i];
+            const heightPct = (total / max) * 100;
+            // Sort segments by type for stable stacking
+            const segs = Object.entries(w.byType).sort(([a], [b]) => a.localeCompare(b));
+            return (
+              <div key={w.weekStart} className="flex-1 flex flex-col-reverse items-center min-w-0 h-full" title={`Week of ${w.weekStart}: ${Math.round(total).toLocaleString()} kg`}>
+                <div className="w-full flex flex-col-reverse rounded-sm overflow-hidden" style={{ height: `${heightPct}%`, minHeight: total > 0 ? "2px" : "0" }}>
+                  {segs.map(([type, vol]) => (
+                    <div
+                      key={type}
+                      style={{
+                        height: `${(vol / total) * 100}%`,
+                        background: TYPE_BAR_BG[type] ?? "#525252",
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="flex justify-between text-[9px] text-neutral-600 mt-2 px-0.5">
+          <span>12 wks ago</span>
+          <span>this week</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -103,6 +590,7 @@ function WeeklySummary() {
   type Stat = { workouts: number; sets: number; volume: number };
   const [thisWeek, setThisWeek] = useState<Stat>({ workouts: 0, sets: 0, volume: 0 });
   const [lastWeek, setLastWeek] = useState<Stat>({ workouts: 0, sets: 0, volume: 0 });
+  const [streak, setStreak] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -111,14 +599,40 @@ function WeeklySummary() {
       const oneWeekAgo = new Date(today.getTime() - 7 * 86_400_000).toISOString().slice(0, 10);
       const twoWeeksAgo = new Date(today.getTime() - 14 * 86_400_000).toISOString().slice(0, 10);
 
+      // Pull the last 26 weeks of workout dates for streak calc
+      const sixMonthsAgo = new Date(today.getTime() - 26 * 7 * 86_400_000).toISOString().slice(0, 10);
+
       const { data: workouts } = await supabase
         .from("workouts")
         .select("id, date")
-        .gte("date", twoWeeksAgo);
+        .gte("date", sixMonthsAgo);
 
       const ws = (workouts ?? []) as { id: string; date: string }[];
       const thisIds = new Set(ws.filter((w) => w.date >= oneWeekAgo).map((w) => w.id));
-      const lastIds = new Set(ws.filter((w) => w.date < oneWeekAgo).map((w) => w.id));
+      const lastIds = new Set(
+        ws.filter((w) => w.date >= twoWeeksAgo && w.date < oneWeekAgo).map((w) => w.id),
+      );
+
+      // Compute consecutive-weeks streak ending this week
+      const datesByWeek = new Set<string>();
+      for (const w of ws) {
+        const d = new Date(`${w.date}T12:00:00`);
+        const dow = (d.getDay() + 6) % 7;
+        const monday = new Date(d.getTime() - dow * 86_400_000).toISOString().slice(0, 10);
+        datesByWeek.add(monday);
+      }
+      const todayD = new Date(today);
+      todayD.setHours(12, 0, 0, 0);
+      const todayDow = (todayD.getDay() + 6) % 7;
+      let cursor = new Date(todayD.getTime() - todayDow * 86_400_000);
+      let count = 0;
+      while (true) {
+        const key = cursor.toISOString().slice(0, 10);
+        if (!datesByWeek.has(key)) break;
+        count += 1;
+        cursor = new Date(cursor.getTime() - 7 * 86_400_000);
+      }
+      setStreak(count);
 
       let sets: { workout_id: string; weight_kg: number | null; reps: number | null; skipped: boolean }[] = [];
       if (thisIds.size > 0 || lastIds.size > 0) {
@@ -148,8 +662,13 @@ function WeeklySummary() {
 
   return (
     <div className="rounded-2xl border border-neutral-800 bg-neutral-900 overflow-hidden">
-      <div className="px-4 pt-4 pb-2 border-b border-neutral-800">
+      <div className="flex items-center justify-between px-4 pt-4 pb-2 border-b border-neutral-800">
         <h2 className="font-semibold text-sm">This week</h2>
+        {streak > 1 && (
+          <span className="text-[11px] font-semibold text-orange-300">
+            🔥 {streak}-week streak
+          </span>
+        )}
       </div>
       <div className="grid grid-cols-3 divide-x divide-neutral-800">
         <StatCell label="Workouts" value={thisWeek.workouts.toString()} delta={thisWeek.workouts - lastWeek.workouts} prevExists={lastWeek.workouts > 0} />
@@ -419,10 +938,15 @@ type Photo = {
 };
 
 async function compressImage(file: File, maxPx = 1200): Promise<File> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
+    const timeout = setTimeout(() => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Image took too long to load"));
+    }, 15_000);
     img.onload = () => {
+      clearTimeout(timeout);
       const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
       const w = Math.round(img.width * scale);
       const h = Math.round(img.height * scale);
@@ -433,11 +957,17 @@ async function compressImage(file: File, maxPx = 1200): Promise<File> {
       canvas.toBlob(
         (blob) => {
           URL.revokeObjectURL(url);
-          resolve(new File([blob!], "photo.jpg", { type: "image/jpeg" }));
+          if (!blob) { reject(new Error("Failed to encode image")); return; }
+          resolve(new File([blob], "photo.jpg", { type: "image/jpeg" }));
         },
         "image/jpeg",
         0.82,
       );
+    };
+    img.onerror = () => {
+      clearTimeout(timeout);
+      URL.revokeObjectURL(url);
+      reject(new Error("Could not read image file"));
     };
     img.src = url;
   });
@@ -482,7 +1012,13 @@ function ProgressPhotos() {
     if (!file) return;
     setUploading(true);
     try {
-      const compressed = await compressImage(file);
+      let compressed: File;
+      try {
+        compressed = await compressImage(file);
+      } catch (err) {
+        alert(err instanceof Error ? err.message : "Could not process image");
+        return;
+      }
       const path = `${Date.now()}.jpg`;
       const { error: upErr } = await supabase.storage
         .from("progress-photos")
@@ -492,7 +1028,12 @@ function ProgressPhotos() {
         taken_at: new Date().toISOString().slice(0, 10),
         storage_path: path,
       });
-      if (dbErr) { alert(dbErr.message); return; }
+      if (dbErr) {
+        // Clean up orphan storage object if DB insert failed
+        await supabase.storage.from("progress-photos").remove([path]);
+        alert(dbErr.message);
+        return;
+      }
       await fetchPhotos();
     } finally {
       setUploading(false);
@@ -501,8 +1042,11 @@ function ProgressPhotos() {
   }
 
   async function deletePhoto(photo: Photo) {
+    const { error: dbErr } = await supabase.from("progress_photos").delete().eq("id", photo.id);
+    if (dbErr) { alert(dbErr.message); return; }
+    // Best-effort storage cleanup — DB delete already succeeded, so a failed
+    // storage remove just leaves an orphan we can clean up later.
     await supabase.storage.from("progress-photos").remove([photo.storage_path]);
-    await supabase.from("progress_photos").delete().eq("id", photo.id);
     setLightbox(null);
     setConfirmDelete(false);
     await fetchPhotos();

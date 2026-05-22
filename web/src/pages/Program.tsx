@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { isTimedExerciseName } from "../data/exerciseCatalog";
 import Sheet from "../components/Sheet";
@@ -150,11 +151,15 @@ export default function Program() {
   }
 
   async function reorderSection(ordered: Row[]) {
-    await Promise.all(
+    const results = await Promise.all(
       ordered.map((r, i) =>
         supabase.from("program").update({ display_order: i + 1 }).eq("id", r.id),
       ),
     );
+    const failed = results.filter((r) => r.error);
+    if (failed.length > 0) {
+      alert(`Couldn't save new order: ${failed[0].error?.message ?? "unknown error"}`);
+    }
     await load();
   }
 
@@ -466,6 +471,11 @@ function EditSheet({
         {/* Last session + history graph */}
         <LastSessionHistory exerciseName={row.exercise_name} />
 
+        <ViewProgressLink
+          exerciseName={row.exercise_name}
+          onNavigate={onClose}
+        />
+
         {/* Name */}
         <div>
           <div className="flex items-center justify-between mb-2">
@@ -643,6 +653,7 @@ function AddSheet({
 
   useEffect(() => {
     if (debounce.current) clearTimeout(debounce.current);
+    let cancelled = false;
     debounce.current = setTimeout(async () => {
       setSearching(true);
       let q = supabase.from("exercise_library").select("id,name,primary_muscles,equipment,is_custom").limit(20);
@@ -653,12 +664,16 @@ function AddSheet({
         const muscles = TYPE_MUSCLES[type] ?? [];
         if (muscles.length > 0) q = q.overlaps("primary_muscles", muscles);
       }
-      q = (q as typeof q).order("is_custom", { ascending: false }).order("name");
+      q = q.order("is_custom", { ascending: false }).order("name");
       const { data } = await q;
+      if (cancelled) return;
       setResults((data as LibraryExercise[]) ?? []);
       setSearching(false);
     }, 200);
-    return () => { if (debounce.current) clearTimeout(debounce.current); };
+    return () => {
+      cancelled = true;
+      if (debounce.current) clearTimeout(debounce.current);
+    };
   }, [search, type]);
 
   function pick(ex: LibraryExercise) {
@@ -953,5 +968,27 @@ function ProgressChart({ sessions }: { sessions: SessionStat[] }) {
         ))}
       </svg>
     </div>
+  );
+}
+
+function ViewProgressLink({
+  exerciseName,
+  onNavigate,
+}: {
+  exerciseName: string;
+  onNavigate: () => void;
+}) {
+  const navigate = useNavigate();
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        navigate(`/exercise/${encodeURIComponent(exerciseName)}`);
+        onNavigate();
+      }}
+      className="w-full text-center text-xs font-medium text-neutral-400 hover:text-white py-2"
+    >
+      View full progress →
+    </button>
   );
 }

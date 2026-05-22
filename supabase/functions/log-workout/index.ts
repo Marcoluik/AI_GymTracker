@@ -49,10 +49,23 @@ EXERCISE NAMING (CRITICAL)
 - For TIMED exercises (anything with "plank" or "hold" in the name): the "reps" field represents SECONDS held, not rep count. "plank 75s" → reps:75.
 - Notes, feelings, observations → "notes" field on the workout. Anything ambiguous → put verbatim into notes, do not guess.
 
-DATE
-- The "Date:" given to you is when the user is logging — usually today. If the user's message references a different date ("yesterday", "last Tuesday", "11 may", "May 11th", "i 11. maj", "i går"), compute that real calendar date and put it in the output "date" field as YYYY-MM-DD.
-- "i går" / "yesterday" = input date minus 1 day. Day names ("last Tuesday") = the most recent past Tuesday before the input date.
-- Otherwise just echo the input date.
+DATE (READ CAREFULLY — DO NOT SKIP)
+The user prompt contains a line like "Today: 2026-05-21 (Thursday)". That is TODAY, the day the user is currently logging. The user's message may reference a DIFFERENT day they actually trained. Your output "date" field is the day they TRAINED, not the day they're logging.
+
+Steps:
+1. Read the user's message. Look for ANY date reference: "yesterday", "i går", "in går", "last Tuesday", "i tirsdags", "the 19th", "19/5", "19. maj", "May 19", "2 days ago", "for 2 dage siden", "Monday", "i mandags", etc.
+2. If a reference exists, COMPUTE the actual calendar date relative to "Today" and output that as "date" (YYYY-MM-DD).
+3. If NO reference exists, output "date" = today.
+
+Concrete examples (assume Today: 2026-05-21, Thursday):
+- "trained yesterday, bench 80x8" → date: "2026-05-20"
+- "i går: chest" → date: "2026-05-20"
+- "Monday's workout" or "i mandags" → date: "2026-05-18" (the most recent past Monday)
+- "the 19th" / "19/5" / "19. maj" → date: "2026-05-19"
+- "2 days ago" / "for 2 dage siden" → date: "2026-05-19"
+- "normal session" / no date mentioned → date: "2026-05-21" (today)
+
+NEVER ignore an explicit date the user wrote. If you see a date or a day reference, USE IT.
 
 OUTPUT FORMAT (strict)
 {
@@ -156,6 +169,54 @@ async function fetchLibraryOptions(
 
   if (!data || data.length === 0) return "";
   return data.map((e: { id: string; name: string }) => `${e.id} — ${e.name}`).join("\n");
+}
+
+/** Find PRs by comparing the new workout's sets against the all-time best
+ *  weight per exercise from earlier workouts. Returns one PR per exercise. */
+async function findPRs(
+  supabase: SupabaseClient,
+  exercises: { exercise_name: string; sets?: { weight_kg: number | null; reps: number | null; skipped?: boolean }[] }[],
+  workoutDate: string,
+): Promise<{ exercise_name: string; weight: number; reps: number; prev: number }[]> {
+  if (exercises.length === 0) return [];
+  const names = [...new Set(exercises.map((e) => e.exercise_name))];
+  const { data: priorWorkouts } = await supabase
+    .from("workouts")
+    .select("id")
+    .lt("date", workoutDate);
+  const ids = ((priorWorkouts ?? []) as { id: string }[]).map((w) => w.id);
+  if (ids.length === 0) return [];
+  const { data: priorSets } = await supabase
+    .from("sets")
+    .select("exercise_name, weight_kg")
+    .in("exercise_name", names)
+    .in("workout_id", ids)
+    .eq("skipped", false)
+    .not("weight_kg", "is", null);
+  const priorMax: Record<string, number> = {};
+  for (const s of (priorSets ?? []) as { exercise_name: string; weight_kg: number }[]) {
+    if (!priorMax[s.exercise_name] || s.weight_kg > priorMax[s.exercise_name]) {
+      priorMax[s.exercise_name] = s.weight_kg;
+    }
+  }
+  const prs: { exercise_name: string; weight: number; reps: number; prev: number }[] = [];
+  for (const ex of exercises) {
+    const prev = priorMax[ex.exercise_name];
+    if (prev === undefined) continue; // first time → not a PR
+    const sets = (ex.sets ?? []).filter((s) => !s.skipped && (s.weight_kg ?? 0) > 0);
+    if (sets.length === 0) continue;
+    const best = sets.reduce((a, b) => ((b.weight_kg ?? 0) > (a.weight_kg ?? 0) ? b : a));
+    const newMax = best.weight_kg ?? 0;
+    if (newMax > prev) {
+      prs.push({
+        exercise_name: ex.exercise_name,
+        weight: newMax,
+        reps: best.reps ?? 0,
+        prev,
+      });
+    }
+  }
+  return prs;
 }
 
 /** Verify Claude's chosen exercise_name is a real library id. If yes, leave it.
@@ -300,8 +361,13 @@ async function logViaClaude(
   const lastSession = await fetchLastSessionSummary(supabase, type);
 
   const userMessage = message.trim() || "(no message — normal session)";
+  // Build "Today: YYYY-MM-DD (Weekday)" so Claude has full date context
+  const weekday = new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", {
+    weekday: "long",
+    timeZone: "UTC",
+  });
   const userPrompt = `Workout type: ${type}
-Date: ${date}
+Today: ${date} (${weekday})
 
 Base program:
 ${programText}
@@ -538,15 +604,23 @@ Deno.serve(async (req) => {
 
     const p = main.parsed as {
       workout_type?: string;
-      exercises?: { exercise_name: string; sets?: unknown[] }[];
+      exercises?: { exercise_name: string; sets?: { weight_kg: number | null; reps: number | null; skipped?: boolean }[] }[];
       notes?: string | null;
     };
     const exCount = p?.exercises?.length ?? 0;
     const setCount = p?.exercises?.reduce((n, e) => n + (e.sets?.length ?? 0), 0) ?? 0;
+
+    // Find PRs in this workout (heaviest weight ever for that exercise)
+    const prs = p?.exercises ? await findPRs(supabase, p.exercises, effectiveDate) : [];
+    const prText = prs.length > 0
+      ? "🎉 PR: " + prs.map((r) => `${r.exercise_name.replace(/_/g, " ")} ${r.weight}kg × ${r.reps} (was ${r.prev}kg)`).join(", ")
+      : null;
+
     const summary = [
       `${workout_type.charAt(0).toUpperCase() + workout_type.slice(1)} logged`,
       exCount > 0 ? `${exCount} exercises · ${setCount} sets` : null,
       abs_workout_id ? "+ Abs (defaults)" : null,
+      prText,
       p?.notes ? `Note: ${p.notes}` : null,
     ].filter(Boolean).join(" · ");
 
