@@ -362,19 +362,31 @@ function StrengthChart({
   bodyWeights: Map<string, number>;
   mode: "max" | "e1rm";
 }) {
-  const w = 320, h = 120, pad = 12;
-  const innerW = w - pad * 2;
-  const innerH = h - pad * 2;
+  const w = 340, h = 160;
+  const leftPad = 32, rightPad = 32, topPad = 12, bottomPad = 22;
+  const innerW = w - leftPad - rightPad;
+  const innerH = h - topPad - bottomPad;
 
   const values = sessions.map((s) => (mode === "max" ? s.maxWeight : s.bestE1RM));
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = Math.max(max - min, 1);
+  const rawMin = Math.min(...values);
+  const rawMax = Math.max(...values);
+  // Pad the scale slightly so points don't sit on the edges
+  const pad = Math.max((rawMax - rawMin) * 0.1, 1);
+  const yMin = Math.max(0, Math.floor((rawMin - pad) / 5) * 5);
+  const yMax = Math.ceil((rawMax + pad) / 5) * 5;
+  const range = Math.max(yMax - yMin, 1);
+
+  // 4 horizontal gridlines / Y labels
+  const TICKS = 4;
+  const yTicks: number[] = [];
+  for (let i = 0; i < TICKS; i++) {
+    yTicks.push(yMin + (range * i) / (TICKS - 1));
+  }
 
   const points = sessions.map((s, i) => {
     const v = mode === "max" ? s.maxWeight : s.bestE1RM;
-    const x = pad + (i / Math.max(sessions.length - 1, 1)) * innerW;
-    const y = pad + (1 - (v - min) / range) * innerH;
+    const x = leftPad + (i / Math.max(sessions.length - 1, 1)) * innerW;
+    const y = topPad + (1 - (v - yMin) / range) * innerH;
     return { x, y, value: v };
   });
 
@@ -389,7 +401,6 @@ function StrengthChart({
 
   // Optional BW overlay — only if we have BW data for ≥ 2 of these sessions
   const bwForSessions = sessions.map((s) => {
-    // Find nearest BW entry within ±7 days
     const target = new Date(`${s.date}T12:00:00`).getTime();
     let best: number | null = null;
     let bestDiff = Infinity;
@@ -413,40 +424,84 @@ function StrengthChart({
     sessions.forEach((_, i) => {
       const v = bwForSessions[i];
       if (v === null) return;
-      const x = pad + (i / Math.max(sessions.length - 1, 1)) * innerW;
-      const y = pad + (1 - (v - bwMin) / bwRange) * innerH;
+      const x = leftPad + (i / Math.max(sessions.length - 1, 1)) * innerW;
+      const y = topPad + (1 - (v - bwMin) / bwRange) * innerH;
       bwPts.push({ x, y });
     });
     bwPath = bwPts.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
   }
 
+  const latest = points[points.length - 1];
+
   return (
     <div>
       <svg viewBox={`0 0 ${w} ${h}`} className="w-full">
+        {/* Y-axis gridlines + labels */}
+        {yTicks.map((t, i) => {
+          const y = topPad + (1 - i / (TICKS - 1)) * innerH;
+          return (
+            <g key={i}>
+              <line
+                x1={leftPad}
+                y1={y}
+                x2={w - rightPad}
+                y2={y}
+                stroke="#1f1f1f"
+                strokeWidth="1"
+              />
+              <text
+                x={leftPad - 4}
+                y={y + 3}
+                fontSize="9"
+                fill="#737373"
+                textAnchor="end"
+              >
+                {Math.round(t)}
+              </text>
+            </g>
+          );
+        })}
+
         {showBW && (
           <path d={bwPath} stroke="#525252" fill="none" strokeWidth="1" strokeDasharray="3 2" opacity="0.7" />
         )}
-        <path d={path} stroke="#737373" fill="none" strokeWidth="1.5" />
+        <path d={path} stroke="#a3a3a3" fill="none" strokeWidth="1.5" />
         {points.map((p, i) => (
           <circle
             key={i}
             cx={p.x}
             cy={p.y}
             r={isPR[i] ? 3.5 : 2.5}
-            fill={isPR[i] ? "#22c55e" : "#a3a3a3"}
+            fill={isPR[i] ? "#22c55e" : "#e5e5e5"}
+            stroke="#0a0a0a"
+            strokeWidth="1"
           />
         ))}
-      </svg>
-      <div className="flex justify-between items-center text-[10px] text-neutral-500 mt-1">
-        <span>{Math.round(min)} kg</span>
-        {showBW && (
-          <span className="flex items-center gap-1 text-neutral-600">
-            <span className="inline-block w-3 h-px border-t border-dashed border-neutral-500" />
-            bodyweight
-          </span>
+
+        {/* Latest value label */}
+        {latest && (
+          <text
+            x={Math.min(latest.x + 6, w - rightPad)}
+            y={Math.max(latest.y - 6, topPad + 8)}
+            fontSize="11"
+            fontWeight="600"
+            fill="#22c55e"
+          >
+            {Math.round(latest.value)} kg
+          </text>
         )}
-        <span>{Math.round(max)} kg</span>
-      </div>
+
+        {/* X-axis "kg" unit hint */}
+        <text x={leftPad - 4} y={h - 4} fontSize="9" fill="#525252" textAnchor="end">
+          kg
+        </text>
+      </svg>
+      {showBW && (
+        <div className="flex items-center justify-end gap-1.5 text-[10px] text-neutral-600 mt-1">
+          <span className="inline-block w-3 h-px border-t border-dashed border-neutral-500" />
+          bodyweight overlay
+        </div>
+      )}
     </div>
   );
 }

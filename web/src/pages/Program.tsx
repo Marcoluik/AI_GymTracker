@@ -78,10 +78,60 @@ function rowSummary(row: Row): string {
 
 export default function Program() {
   const [rows, setRows] = useState<Row[]>([]);
+  const [progressing, setProgressing] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<Row | null>(null);
   const [addingType, setAddingType] = useState<string | null>(null);
+
+  // After rows load, compute which exercises are progressing
+  // (last 3 sessions strictly increasing max weight)
+  useEffect(() => {
+    if (rows.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const names = [...new Set(rows.map((r) => r.exercise_name))];
+      const { data } = await supabase
+        .from("sets")
+        .select("exercise_name, weight_kg, workout_id, workouts!inner(date)")
+        .in("exercise_name", names)
+        .eq("skipped", false)
+        .not("weight_kg", "is", null)
+        .gt("weight_kg", 0);
+      if (cancelled) return;
+
+      type Row = {
+        exercise_name: string;
+        weight_kg: number;
+        workout_id: string;
+        workouts: { date: string } | { date: string }[];
+      };
+      // exercise → date → maxWeight
+      const byExercise = new Map<string, Map<string, number>>();
+      for (const r of (data ?? []) as Row[]) {
+        const date = Array.isArray(r.workouts) ? r.workouts[0]?.date : r.workouts?.date;
+        if (!date) continue;
+        const m = byExercise.get(r.exercise_name) ?? new Map<string, number>();
+        const cur = m.get(date) ?? 0;
+        if (r.weight_kg > cur) m.set(date, r.weight_kg);
+        byExercise.set(r.exercise_name, m);
+      }
+
+      const out = new Set<string>();
+      for (const [name, dm] of byExercise) {
+        const recent = [...dm.entries()]
+          .sort((a, b) => b[0].localeCompare(a[0]))
+          .slice(0, 3);
+        if (recent.length < 3) continue;
+        // recent[0] is most recent
+        if (recent[0][1] > recent[1][1] && recent[1][1] > recent[2][1]) {
+          out.add(name);
+        }
+      }
+      setProgressing(out);
+    })();
+    return () => { cancelled = true; };
+  }, [rows]);
 
   async function load() {
     const { data, error } = await supabase
@@ -194,7 +244,12 @@ export default function Program() {
               {typeRows.length === 0 ? (
                 <p className="px-4 py-6 text-center text-sm text-neutral-500">No exercises yet</p>
               ) : (
-                <DraggableList rows={typeRows} onReorder={reorderSection} onTap={setEditing} />
+                <DraggableList
+                  rows={typeRows}
+                  onReorder={reorderSection}
+                  onTap={setEditing}
+                  progressing={progressing}
+                />
               )}
               <button
                 type="button"
@@ -241,10 +296,12 @@ function DraggableList({
   rows,
   onReorder,
   onTap,
+  progressing,
 }: {
   rows: Row[];
   onReorder: (ordered: Row[]) => Promise<void>;
   onTap: (row: Row) => void;
+  progressing: Set<string>;
 }) {
   const [items, setItems] = useState(rows);
   const [draggingId, setDraggingId] = useState<number | null>(null);
@@ -315,7 +372,17 @@ function DraggableList({
             className="flex-1 flex items-center justify-between gap-3 pr-4 py-3.5 text-left"
           >
             <div className="min-w-0 flex-1">
-              <div className="font-medium text-[15px] truncate">{labelize(r.exercise_name)}</div>
+              <div className="flex items-center gap-1.5">
+                <span className="font-medium text-[15px] truncate">{labelize(r.exercise_name)}</span>
+                {progressing.has(r.exercise_name) && (
+                  <span
+                    title="3 sessions in a row of increasing weight"
+                    className="shrink-0 text-[9px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400"
+                  >
+                    ↑ 3
+                  </span>
+                )}
+              </div>
               <div className="text-xs text-neutral-500 mt-0.5 truncate">{rowSummary(r)}</div>
             </div>
             <ChevronRightIcon className="w-4 h-4 text-neutral-600 shrink-0" />
