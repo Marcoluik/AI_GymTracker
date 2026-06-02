@@ -72,7 +72,7 @@ export default function App() {
 
 function pageTitle(pathname: string): string {
   if (pathname.startsWith("/workouts")) return "Workouts";
-  if (pathname.startsWith("/trends")) return "Trends";
+  if (pathname.startsWith("/trends")) return "Progress";
   if (pathname.startsWith("/library")) return "Exercise Library";
   return "Program";
 }
@@ -109,7 +109,7 @@ function Layout() {
         <div className="flex">
           <Tab to="/program" label="Program" icon={<ListIcon />} />
           <Tab to="/workouts" label="Workouts" icon={<CalendarIcon />} />
-          <Tab to="/trends" label="Trends" icon={<BarChartIcon />} />
+          <Tab to="/trends" label="Progress" icon={<BarChartIcon />} />
           <Tab to="/library" label="Library" icon={<LibraryIcon />} />
         </div>
       </nav>

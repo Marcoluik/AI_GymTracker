@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { isTimedExerciseName } from "../data/exerciseCatalog";
@@ -10,7 +10,6 @@ import {
   ChevronRightIcon,
   ChevronDownIcon,
   SearchIcon,
-  CheckIcon,
   GripIcon,
 } from "../components/icons";
 
@@ -26,11 +25,13 @@ type Row = {
   is_bodyweight_base: boolean;
   per_set_weights: number[] | null;
   to_failure: boolean;
+  warmup_enabled: boolean;
 };
 
-type ProgramFromDb = Omit<Row, "is_bodyweight_base" | "to_failure"> & {
+type ProgramFromDb = Omit<Row, "is_bodyweight_base" | "to_failure" | "warmup_enabled"> & {
   is_bodyweight_base?: boolean | null;
   to_failure?: boolean | null;
+  warmup_enabled?: boolean | null;
   exercise_id?: string | null;
 };
 
@@ -43,7 +44,8 @@ const TYPE_LABEL: Record<string, string> = {
 };
 
 function labelize(name: string) {
-  const s = name.replace(/_/g, " ");
+  const clean = name.replace(/_custom_\d+$/, "");
+  const s = clean.replace(/_+/g, " ").replace(/\s+/g, " ").trim();
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
@@ -73,7 +75,30 @@ function rowSummary(row: Row): string {
   } else if (row.default_weight_kg !== null) {
     parts.push(`${row.default_weight_kg} kg`);
   }
+  if (row.warmup_enabled && smartWarmupCandidate(row)) parts.push("warmup");
   return parts.join(" · ");
+}
+
+function formatKg(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function smartWarmupCandidate(row: Row): boolean {
+  if (row.to_failure) return false;
+  if (isTimedExerciseName(row.exercise_name)) return false;
+  const weights = (row.per_set_weights && row.per_set_weights.length > 0
+    ? row.per_set_weights
+    : row.default_weight_kg !== null
+      ? [row.default_weight_kg]
+      : [])
+    .filter((w) => Number.isFinite(w));
+  const maxWeight = weights.length > 0 ? Math.max(...weights) : 0;
+  if (row.is_bodyweight_base && maxWeight > 0) return true;
+  if (maxWeight < 20) return false;
+  if (/(curl|extension|raise|fly|flies|face_pull|abductor|adductor|calf|crunch|twist)/.test(row.exercise_name) && maxWeight < 80) {
+    return false;
+  }
+  return /(squat|deadlift|press|row|pull|pulldown|dip|thrust|bench)/.test(row.exercise_name) || maxWeight >= 80;
 }
 
 export default function Program() {
@@ -93,7 +118,7 @@ export default function Program() {
       const names = [...new Set(rows.map((r) => r.exercise_name))];
       const { data } = await supabase
         .from("sets")
-        .select("exercise_name, weight_kg, workout_id, workouts!inner(date)")
+        .select("*, workouts!inner(date)")
         .in("exercise_name", names)
         .eq("skipped", false)
         .not("weight_kg", "is", null)
@@ -104,11 +129,13 @@ export default function Program() {
         exercise_name: string;
         weight_kg: number;
         workout_id: string;
+        is_warmup?: boolean;
         workouts: { date: string } | { date: string }[];
       };
       // exercise → date → maxWeight
       const byExercise = new Map<string, Map<string, number>>();
       for (const r of (data ?? []) as Row[]) {
+        if (r.is_warmup) continue;
         const date = Array.isArray(r.workouts) ? r.workouts[0]?.date : r.workouts?.date;
         if (!date) continue;
         const m = byExercise.get(r.exercise_name) ?? new Map<string, number>();
@@ -147,6 +174,7 @@ export default function Program() {
           ...r,
           is_bodyweight_base: !!r.is_bodyweight_base,
           to_failure: !!r.to_failure,
+          warmup_enabled: r.warmup_enabled !== false,
           per_set_weights: r.per_set_weights ?? null,
           exercise_id: r.exercise_id ?? null,
         })),
@@ -178,6 +206,7 @@ export default function Program() {
     reps: string,
     isBodyweightBase: boolean,
     toFailure: boolean,
+    warmupEnabled: boolean,
     perSetWeights: number[] | null,
   ) {
     const trimmed = normalize(name);
@@ -194,6 +223,7 @@ export default function Program() {
       display_order: maxOrder + 1,
       is_bodyweight_base: isBodyweightBase,
       to_failure: toFailure,
+      warmup_enabled: warmupEnabled,
       per_set_weights: perSetWeights && perSetWeights.length > 0 ? perSetWeights : null,
     });
     if (error) alert(error.message);
@@ -225,7 +255,9 @@ export default function Program() {
 
   return (
     <div className="space-y-6 pb-4">
-      <p className="text-sm text-neutral-400 px-1">Your weekly split. Tap an exercise to edit it.</p>
+      <p className="text-sm text-neutral-400 px-1">
+        Tap an exercise to edit. Use + and - to change targets fast.
+      </p>
       {TYPES.map((type) => {
         const typeRows = rows
           .filter((r) => r.workout_type === type)
@@ -248,6 +280,7 @@ export default function Program() {
                   rows={typeRows}
                   onReorder={reorderSection}
                   onTap={setEditing}
+                  onPatch={updateRow}
                   progressing={progressing}
                 />
               )}
@@ -280,8 +313,8 @@ export default function Program() {
         <AddSheet
           type={addingType}
           onClose={() => setAddingType(null)}
-          onAdd={async (name, exerciseId, weight, sets, reps, bw, toFailure, psw) => {
-            await addRow(addingType, name, exerciseId, weight, sets, reps, bw, toFailure, psw);
+          onAdd={async (name, exerciseId, weight, sets, reps, bw, toFailure, warmupEnabled, psw) => {
+            await addRow(addingType, name, exerciseId, weight, sets, reps, bw, toFailure, warmupEnabled, psw);
             setAddingType(null);
           }}
         />
@@ -296,11 +329,13 @@ function DraggableList({
   rows,
   onReorder,
   onTap,
+  onPatch,
   progressing,
 }: {
   rows: Row[];
   onReorder: (ordered: Row[]) => Promise<void>;
   onTap: (row: Row) => void;
+  onPatch: (id: number, patch: Partial<Row>) => Promise<void>;
   progressing: Set<string>;
 }) {
   const [items, setItems] = useState(rows);
@@ -369,7 +404,7 @@ function DraggableList({
           <button
             type="button"
             onClick={() => r.id !== draggingId && onTap(r)}
-            className="flex-1 flex items-center justify-between gap-3 pr-4 py-3.5 text-left"
+            className="flex-1 flex items-center gap-3 py-3.5 text-left min-w-0"
           >
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5">
@@ -385,11 +420,108 @@ function DraggableList({
               </div>
               <div className="text-xs text-neutral-500 mt-0.5 truncate">{rowSummary(r)}</div>
             </div>
-            <ChevronRightIcon className="w-4 h-4 text-neutral-600 shrink-0" />
+          </button>
+          <QuickAdjust row={r} onPatch={(patch) => onPatch(r.id, patch)} />
+          <button
+            type="button"
+            onClick={() => r.id !== draggingId && onTap(r)}
+            className="pr-4 pl-2 py-4 text-neutral-600 hover:text-neutral-300 shrink-0"
+            aria-label={`Edit ${labelize(r.exercise_name)}`}
+          >
+            <ChevronRightIcon className="w-4 h-4" />
           </button>
         </div>
       ))}
     </>
+  );
+}
+
+function roundOne(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function nudgeWeightPatch(row: Row, delta: number): Partial<Row> {
+  const patch: Partial<Row> = {};
+  if (row.default_weight_kg !== null) {
+    patch.default_weight_kg = roundOne(Math.max(0, row.default_weight_kg + delta));
+  }
+  if (row.per_set_weights && row.per_set_weights.length > 0) {
+    patch.per_set_weights = row.per_set_weights.map((w) => roundOne(Math.max(0, w + delta)));
+  }
+  return patch;
+}
+
+function quickWeightLabel(row: Row): string {
+  if (row.per_set_weights && row.per_set_weights.length > 0) {
+    const min = Math.min(...row.per_set_weights);
+    const max = Math.max(...row.per_set_weights);
+    return min === max ? `${formatKg(min)} kg` : `${formatKg(min)}-${formatKg(max)} kg`;
+  }
+  if (row.default_weight_kg !== null) {
+    return row.is_bodyweight_base && row.default_weight_kg === 0
+      ? "BW"
+      : `${formatKg(row.default_weight_kg)} kg`;
+  }
+  return "kg";
+}
+
+function QuickAdjust({
+  row,
+  onPatch,
+}: {
+  row: Row;
+  onPatch: (patch: Partial<Row>) => Promise<void>;
+}) {
+  const [saving, setSaving] = useState(false);
+  const hasWeight =
+    row.default_weight_kg !== null ||
+    !!(row.per_set_weights && row.per_set_weights.length > 0);
+  const canAdjustReps = !hasWeight && !row.to_failure && row.default_reps !== null;
+
+  if (!hasWeight && !canAdjustReps) return null;
+
+  const step = hasWeight ? (row.is_bodyweight_base ? 1 : 2.5) : (isTimedExerciseName(row.exercise_name) ? 5 : 1);
+  const label = hasWeight
+    ? quickWeightLabel(row)
+    : `${row.default_reps}${isTimedExerciseName(row.exercise_name) ? "s" : " reps"}`;
+
+  async function nudge(delta: number) {
+    if (saving) return;
+    const patch = hasWeight
+      ? nudgeWeightPatch(row, delta)
+      : { default_reps: Math.max(1, (row.default_reps ?? 1) + delta) };
+    setSaving(true);
+    try {
+      await onPatch(patch);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex items-center rounded-lg border border-neutral-800 bg-neutral-950/50 overflow-hidden shrink-0 mr-1">
+      <button
+        type="button"
+        onClick={() => nudge(-step)}
+        disabled={saving}
+        className="w-8 h-9 flex items-center justify-center text-neutral-300 hover:bg-neutral-800 active:bg-neutral-700 disabled:opacity-40"
+        aria-label={`Decrease ${labelize(row.exercise_name)}`}
+      >
+        -
+      </button>
+      <span className="min-w-[4.25rem] h-9 px-2 flex items-center justify-center text-[11px] font-semibold text-neutral-300 border-x border-neutral-800">
+        {label}
+      </span>
+      <button
+        type="button"
+        onClick={() => nudge(step)}
+        disabled={saving}
+        className="w-8 h-9 flex items-center justify-center text-neutral-300 hover:bg-neutral-800 active:bg-neutral-700 disabled:opacity-40"
+        aria-label={`Increase ${labelize(row.exercise_name)}`}
+      >
+        <PlusIcon className="w-3.5 h-3.5" />
+      </button>
+    </div>
   );
 }
 
@@ -400,6 +532,7 @@ function NumberField({
   value,
   onChange,
   onBlur,
+  onStep,
   placeholder,
   step,
   disabled,
@@ -408,26 +541,52 @@ function NumberField({
   value: string;
   onChange: (v: string) => void;
   onBlur?: () => void;
+  onStep?: (delta: number) => void;
   placeholder?: string;
   step?: string;
   disabled?: boolean;
 }) {
+  const stepValue = parseFloat(step ?? "1") || 1;
   return (
     <div>
       <label className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold block mb-1.5">
         {label}
       </label>
-      <input
-        type="number"
-        inputMode="decimal"
-        step={step}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={onBlur}
-        placeholder={placeholder}
-        disabled={disabled}
-        className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-base text-center focus:outline-none focus:ring-2 focus:ring-neutral-600 placeholder-neutral-500 disabled:opacity-40"
-      />
+      <div className="flex overflow-hidden rounded-lg bg-neutral-800 focus-within:ring-2 focus-within:ring-neutral-600">
+        {onStep && (
+          <button
+            type="button"
+            onClick={() => onStep(-stepValue)}
+            disabled={disabled}
+            className="w-10 shrink-0 text-neutral-300 hover:bg-neutral-700 active:bg-neutral-600 disabled:opacity-40"
+            aria-label={`Decrease ${label}`}
+          >
+            -
+          </button>
+        )}
+        <input
+          type="number"
+          inputMode="decimal"
+          step={step}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onBlur={onBlur}
+          placeholder={placeholder}
+          disabled={disabled}
+          className="min-w-0 flex-1 bg-transparent px-2 py-2.5 text-base text-center focus:outline-none placeholder-neutral-500 disabled:opacity-40"
+        />
+        {onStep && (
+          <button
+            type="button"
+            onClick={() => onStep(stepValue)}
+            disabled={disabled}
+            className="w-10 shrink-0 flex items-center justify-center text-neutral-300 hover:bg-neutral-700 active:bg-neutral-600 disabled:opacity-40"
+            aria-label={`Increase ${label}`}
+          >
+            <PlusIcon className="w-4 h-4" />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -451,6 +610,7 @@ function EditSheet({
   const [reps, setReps] = useState(row.default_reps?.toString() ?? "");
   const [bw, setBw] = useState(row.is_bodyweight_base);
   const [toFailure, setToFailure] = useState(row.to_failure);
+  const [warmupEnabled, setWarmupEnabled] = useState(row.warmup_enabled);
   const [perSetMode, setPerSetMode] = useState(!!(row.per_set_weights && row.per_set_weights.length > 0));
   const [perSetWeights, setPerSetWeights] = useState<string[]>(() => {
     if (row.per_set_weights && row.per_set_weights.length > 0)
@@ -467,6 +627,7 @@ function EditSheet({
     setReps(row.default_reps?.toString() ?? "");
     setBw(row.is_bodyweight_base);
     setToFailure(row.to_failure);
+    setWarmupEnabled(row.warmup_enabled);
     const hasPsw = !!(row.per_set_weights && row.per_set_weights.length > 0);
     setPerSetMode(hasPsw);
     const n = row.default_sets ?? 3;
@@ -509,6 +670,10 @@ function EditSheet({
     setToFailure(next);
     onPatch({ to_failure: next, default_reps: next ? null : (reps === "" ? null : parseInt(reps, 10)) });
   }
+  function commitWarmupEnabled(next: boolean) {
+    setWarmupEnabled(next);
+    if (next !== row.warmup_enabled) onPatch({ warmup_enabled: next });
+  }
   function commitPerSetMode(next: boolean) {
     setPerSetMode(next);
     if (next) {
@@ -528,9 +693,46 @@ function EditSheet({
     setPerSetWeights(next);
     onPatch({ per_set_weights: next.map((v) => (v === "" ? 0 : parseFloat(v))) });
   }
+  function stepWeight(delta: number) {
+    const base = weight === "" ? (row.default_weight_kg ?? 0) : parseFloat(weight);
+    const next = roundOne(Math.max(0, (isNaN(base) ? 0 : base) + delta));
+    setWeight(String(next));
+    onPatch({ default_weight_kg: next });
+  }
+  function stepSets(delta: number) {
+    const base = parseInt(sets, 10) || row.default_sets || 3;
+    const next = Math.max(1, base + delta);
+    setSets(String(next));
+    if (perSetMode) {
+      setPerSetWeights((prev) =>
+        Array.from({ length: next }, (_, i) => prev[i] ?? prev[prev.length - 1] ?? ""),
+      );
+    }
+    onPatch({ default_sets: next });
+  }
+  function stepReps(delta: number) {
+    const base = parseInt(reps, 10) || row.default_reps || 1;
+    const next = Math.max(1, base + delta);
+    setReps(String(next));
+    onPatch({ default_reps: next });
+  }
 
   const timed = isTimedExerciseName(normalize(name));
   const numSets = parseInt(sets, 10) || row.default_sets || 3;
+  const currentRow: Row = {
+    ...row,
+    exercise_name: normalize(name) || row.exercise_name,
+    default_weight_kg: weight === "" ? null : parseFloat(weight),
+    default_sets: sets === "" ? null : parseInt(sets, 10),
+    default_reps: toFailure ? null : (reps === "" ? null : parseInt(reps, 10)),
+    is_bodyweight_base: bw,
+    to_failure: toFailure,
+    warmup_enabled: warmupEnabled,
+    per_set_weights: perSetMode
+      ? perSetWeights.map((v) => (v === "" ? 0 : parseFloat(v)))
+      : null,
+  };
+  const likelyWarmup = smartWarmupCandidate(currentRow);
 
   return (
     <Sheet open onClose={onClose} title="Edit exercise">
@@ -571,6 +773,16 @@ function EditSheet({
           <Toggle checked={bw} onChange={commitBw} ariaLabel="Bodyweight movement" />
         </label>
 
+        <label className="flex items-center justify-between gap-3 rounded-xl border border-neutral-800 bg-neutral-900/60 px-3 py-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium">Smart warmups</div>
+            <div className="text-xs text-neutral-500 mt-0.5">
+              {likelyWarmup ? "Adds warmup sets before working sets." : "Only kicks in when this is heavy enough."}
+            </div>
+          </div>
+          <Toggle checked={warmupEnabled} onChange={commitWarmupEnabled} ariaLabel="Smart warmups" />
+        </label>
+
         {/* Sets / Reps / Weight */}
         <div className="grid grid-cols-3 gap-2">
           <NumberField
@@ -578,6 +790,7 @@ function EditSheet({
             value={weight}
             onChange={setWeight}
             onBlur={commitWeight}
+            onStep={stepWeight}
             step="0.5"
             placeholder={bw ? "0" : "kg"}
             disabled={perSetMode}
@@ -587,6 +800,7 @@ function EditSheet({
             value={sets}
             onChange={setSets}
             onBlur={commitSets}
+            onStep={stepSets}
             step="1"
             placeholder="3"
           />
@@ -608,17 +822,37 @@ function EditSheet({
                 {toFailure ? "Failure ✓" : "To failure"}
               </button>
             </div>
-            <input
-              type="number"
-              inputMode="decimal"
-              step="1"
-              value={toFailure ? "" : reps}
-              onChange={(e) => setReps(e.target.value)}
-              onBlur={commitReps}
-              placeholder={toFailure ? "—" : timed ? "60" : "8"}
-              disabled={toFailure}
-              className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-base text-center focus:outline-none focus:ring-2 focus:ring-neutral-600 placeholder-neutral-500 disabled:opacity-40"
-            />
+            <div className="flex overflow-hidden rounded-lg bg-neutral-800 focus-within:ring-2 focus-within:ring-neutral-600">
+              <button
+                type="button"
+                onClick={() => stepReps(timed ? -5 : -1)}
+                disabled={toFailure}
+                className="w-10 shrink-0 text-neutral-300 hover:bg-neutral-700 active:bg-neutral-600 disabled:opacity-40"
+                aria-label={timed ? "Decrease seconds" : "Decrease reps"}
+              >
+                -
+              </button>
+              <input
+                type="number"
+                inputMode="decimal"
+                step="1"
+                value={toFailure ? "" : reps}
+                onChange={(e) => setReps(e.target.value)}
+                onBlur={commitReps}
+                placeholder={toFailure ? "—" : timed ? "60" : "8"}
+                disabled={toFailure}
+                className="min-w-0 flex-1 bg-transparent px-2 py-2.5 text-base text-center focus:outline-none placeholder-neutral-500 disabled:opacity-40"
+              />
+              <button
+                type="button"
+                onClick={() => stepReps(timed ? 5 : 1)}
+                disabled={toFailure}
+                className="w-10 shrink-0 flex items-center justify-center text-neutral-300 hover:bg-neutral-700 active:bg-neutral-600 disabled:opacity-40"
+                aria-label={timed ? "Increase seconds" : "Increase reps"}
+              >
+                <PlusIcon className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -702,7 +936,17 @@ function AddSheet({
 }: {
   type: string;
   onClose: () => void;
-  onAdd: (name: string, exerciseId: string | null, weight: string, sets: string, reps: string, bw: boolean, toFailure: boolean, perSetWeights: number[] | null) => Promise<void>;
+  onAdd: (
+    name: string,
+    exerciseId: string | null,
+    weight: string,
+    sets: string,
+    reps: string,
+    bw: boolean,
+    toFailure: boolean,
+    warmupEnabled: boolean,
+    perSetWeights: number[] | null,
+  ) => Promise<void>;
 }) {
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<LibraryExercise[]>([]);
@@ -713,6 +957,7 @@ function AddSheet({
   const [reps, setReps] = useState("8");
   const [bw, setBw] = useState(false);
   const [toFailure, setToFailure] = useState(false);
+  const [warmupEnabled, setWarmupEnabled] = useState(true);
   const [perSetMode, setPerSetMode] = useState(false);
   const [perSetWeights, setPerSetWeights] = useState<string[]>(["", "", ""]);
   const [submitting, setSubmitting] = useState(false);
@@ -792,7 +1037,7 @@ function AddSheet({
     const finalName = effective ? effective.name : search.trim();
     const exerciseId = effective ? effective.id : null;
     const psw = perSetMode ? perSetWeights.map((v) => (v === "" ? 0 : parseFloat(v))) : null;
-    await onAdd(finalName, exerciseId, weight, sets, reps, bw, toFailure, psw);
+    await onAdd(finalName, exerciseId, weight, sets, reps, bw, toFailure, warmupEnabled, psw);
     setSubmitting(false);
   }
 
@@ -852,9 +1097,38 @@ function AddSheet({
               <Toggle checked={bw} onChange={setBw} ariaLabel="Bodyweight movement" />
             </label>
 
+            <label className="flex items-center justify-between gap-3 rounded-xl border border-neutral-800 bg-neutral-900/60 px-3 py-3">
+              <div className="min-w-0">
+                <div className="text-sm font-medium">Smart warmups</div>
+                <div className="text-xs text-neutral-500 mt-0.5">Auto before working sets when useful.</div>
+              </div>
+              <Toggle checked={warmupEnabled} onChange={setWarmupEnabled} ariaLabel="Smart warmups" />
+            </label>
+
             <div className="grid grid-cols-3 gap-2">
-              <NumberField label={bw ? "Added kg" : "kg"} value={weight} onChange={setWeight} step="0.5" placeholder={bw ? "0" : "kg"} disabled={perSetMode} />
-              <NumberField label="Sets" value={sets} onChange={handleSetsChange} step="1" placeholder="3" />
+              <NumberField
+                label={bw ? "Added kg" : "kg"}
+                value={weight}
+                onChange={setWeight}
+                onStep={(delta) => {
+                  const base = weight === "" ? 0 : parseFloat(weight);
+                  setWeight(String(roundOne(Math.max(0, (isNaN(base) ? 0 : base) + delta))));
+                }}
+                step="0.5"
+                placeholder={bw ? "0" : "kg"}
+                disabled={perSetMode}
+              />
+              <NumberField
+                label="Sets"
+                value={sets}
+                onChange={handleSetsChange}
+                onStep={(delta) => {
+                  const base = parseInt(sets, 10) || 3;
+                  handleSetsChange(String(Math.max(1, base + delta)));
+                }}
+                step="1"
+                placeholder="3"
+              />
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <span className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold">{timed ? "Seconds" : "Reps"}</span>
@@ -863,9 +1137,35 @@ function AddSheet({
                     {toFailure ? "Failure ✓" : "To failure"}
                   </button>
                 </div>
-                <input type="number" inputMode="decimal" step="1" value={toFailure ? "" : reps} onChange={(e) => setReps(e.target.value)}
-                  placeholder={toFailure ? "—" : timed ? "60" : "8"} disabled={toFailure}
-                  className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-base text-center focus:outline-none focus:ring-2 focus:ring-neutral-600 placeholder-neutral-500 disabled:opacity-40" />
+                <div className="flex overflow-hidden rounded-lg bg-neutral-800 focus-within:ring-2 focus-within:ring-neutral-600">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const base = parseInt(reps, 10) || (timed ? 60 : 8);
+                      setReps(String(Math.max(1, base - (timed ? 5 : 1))));
+                    }}
+                    disabled={toFailure}
+                    className="w-10 shrink-0 text-neutral-300 hover:bg-neutral-700 active:bg-neutral-600 disabled:opacity-40"
+                    aria-label={timed ? "Decrease seconds" : "Decrease reps"}
+                  >
+                    -
+                  </button>
+                  <input type="number" inputMode="decimal" step="1" value={toFailure ? "" : reps} onChange={(e) => setReps(e.target.value)}
+                    placeholder={toFailure ? "—" : timed ? "60" : "8"} disabled={toFailure}
+                    className="min-w-0 flex-1 bg-transparent px-2 py-2.5 text-base text-center focus:outline-none placeholder-neutral-500 disabled:opacity-40" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const base = parseInt(reps, 10) || (timed ? 60 : 8);
+                      setReps(String(base + (timed ? 5 : 1)));
+                    }}
+                    disabled={toFailure}
+                    className="w-10 shrink-0 flex items-center justify-center text-neutral-300 hover:bg-neutral-700 active:bg-neutral-600 disabled:opacity-40"
+                    aria-label={timed ? "Increase seconds" : "Increase reps"}
+                  >
+                    <PlusIcon className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -916,19 +1216,20 @@ function LastSessionHistory({ exerciseName }: { exerciseName: string }) {
     (async () => {
       const { data } = await supabase
         .from("sets")
-        .select("weight_kg, reps, skipped, workout_id, workouts!inner(date)")
+        .select("*, workouts!inner(date)")
         .eq("exercise_name", exerciseName);
       const rows = (data ?? []) as {
         weight_kg: number | null;
         reps: number | null;
         skipped: boolean;
         workout_id: string;
+        is_warmup?: boolean;
         workouts: { date: string } | { date: string }[];
       }[];
 
       const byDate = new Map<string, { weight: number; reps: number }[]>();
       for (const r of rows) {
-        if (r.skipped) continue;
+        if (r.skipped || r.is_warmup) continue;
         const date = Array.isArray(r.workouts) ? r.workouts[0]?.date : r.workouts?.date;
         if (!date) continue;
         const list = byDate.get(date) ?? [];

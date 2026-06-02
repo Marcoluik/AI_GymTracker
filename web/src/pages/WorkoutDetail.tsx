@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import Model, { type Muscle } from "react-body-highlighter";
 import { supabase } from "../lib/supabase";
-import { ChevronLeftIcon, ChevronDownIcon } from "../components/icons";
+import { ChevronLeftIcon, ChevronDownIcon, PlusIcon } from "../components/icons";
 import { isTimedExerciseName } from "../data/exerciseCatalog";
 
 type Workout = {
@@ -14,17 +14,23 @@ type Workout = {
 };
 type SetRow = {
   id: string;
+  workout_id: string;
   exercise_name: string;
   weight_kg: number | null;
   reps: number | null;
   set_number: number | null;
   skipped: boolean;
+  is_warmup?: boolean;
   is_deviation: boolean;
 };
 type Run = {
   duration_minutes: number | null;
   distance_km: number | null;
   notes: string | null;
+};
+type PreviousExercise = {
+  date: string;
+  sets: { weight_kg: number | null; reps: number | null }[];
 };
 
 const LIBRARY_IMG_BASE =
@@ -48,8 +54,28 @@ const WORKOUT_MUSCLES_TO_LIB: Record<string, Muscle[]> = {
 };
 
 function labelize(name: string) {
-  const s = name.replace(/_/g, " ");
+  const clean = name.replace(/_custom_\d+$/, "");
+  const s = clean.replace(/_+/g, " ").replace(/\s+/g, " ").trim();
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function roundOne(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function roundToPlate(value: number): number {
+  return Math.max(0, Math.round(value / 2.5) * 2.5);
+}
+
+function stepString(value: string, delta: number, fallback = 0): string {
+  const current = value === "" ? fallback : parseFloat(value);
+  const next = roundOne(Math.max(0, (isNaN(current) ? fallback : current) + delta));
+  return String(next);
+}
+
+function stepIntString(value: string, delta: number, fallback = 1): string {
+  const current = value === "" ? fallback : parseInt(value, 10);
+  return String(Math.max(1, (isNaN(current) ? fallback : current) + delta));
 }
 
 function formatFullDate(dateStr: string): string {
@@ -78,7 +104,7 @@ function formatSet(s: SetRow): string {
 
 // Build a short text summary across sets, e.g. "70 kg × 8" or "70–80 kg × 8"
 function exerciseSummary(rows: SetRow[]): string {
-  const active = rows.filter((r) => !r.skipped);
+  const active = rows.filter((r) => !r.is_warmup && !r.skipped);
   if (active.length === 0) return "all skipped";
   const timed = isTimedExerciseName(rows[0].exercise_name);
   const weights = active.map((r) => r.weight_kg).filter((w): w is number => w !== null && w !== 0);
@@ -98,7 +124,34 @@ function exerciseSummary(rows: SetRow[]): string {
   return parts.length > 0 ? parts.join(" ") : "—";
 }
 
-type EditedSet = { weight_kg: string; reps: string; skipped: boolean };
+function valuesSummary(rows: { weight_kg: number | null; reps: number | null }[], exerciseName: string): string {
+  if (rows.length === 0) return "—";
+  const timed = isTimedExerciseName(exerciseName);
+  const parts = rows.map((r) => {
+    const weight = r.weight_kg !== null && r.weight_kg !== 0 ? `${r.weight_kg} kg` : "BW";
+    if (r.reps === null) return weight;
+    return timed ? `${weight} × ${r.reps}s` : `${weight} × ${r.reps}`;
+  });
+  return parts.join(" / ");
+}
+
+function mostCommon(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const counts = new Map<number, number>();
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+}
+
+function sortSetRows(rows: SetRow[]): SetRow[] {
+  return [...rows].sort((a, b) => {
+    const byName = a.exercise_name.localeCompare(b.exercise_name);
+    if (byName !== 0) return byName;
+    if (!!a.is_warmup !== !!b.is_warmup) return a.is_warmup ? -1 : 1;
+    return (a.set_number ?? 0) - (b.set_number ?? 0);
+  });
+}
+
+type EditedSet = { weight_kg: string; reps: string; skipped: boolean; is_warmup: boolean };
 
 export default function WorkoutDetail() {
   const { id } = useParams();
@@ -118,6 +171,9 @@ export default function WorkoutDetail() {
   const [deleting, setDeleting] = useState(false);
   const [priorMax, setPriorMax] = useState<Record<string, number>>({});
   const [libraryImages, setLibraryImages] = useState<Record<string, string[]>>({});
+  const [previousByExercise, setPreviousByExercise] = useState<Record<string, PreviousExercise>>({});
+  const [updatingProgram, setUpdatingProgram] = useState(false);
+  const [programUpdateMessage, setProgramUpdateMessage] = useState("");
 
   useEffect(() => {
     if (!id) return;
@@ -136,7 +192,7 @@ export default function WorkoutDetail() {
       if (we) setError(we.message);
       else {
         setWorkout(w);
-        setSets(s || []);
+        setSets(sortSetRows((s || []) as SetRow[]));
         setRun(r ?? null);
       }
       setLoading(false);
@@ -156,13 +212,14 @@ export default function WorkoutDetail() {
       if (ids.length === 0) { setPriorMax({}); return; }
       const { data: priorSets } = await supabase
         .from("sets")
-        .select("exercise_name, weight_kg")
+        .select("*")
         .in("exercise_name", exerciseNames)
         .in("workout_id", ids)
         .eq("skipped", false)
         .not("weight_kg", "is", null);
       const max: Record<string, number> = {};
-      for (const s of (priorSets ?? []) as { exercise_name: string; weight_kg: number }[]) {
+      for (const s of (priorSets ?? []) as SetRow[]) {
+        if (s.is_warmup) continue;
         if (s.weight_kg === null) continue;
         if (!max[s.exercise_name] || s.weight_kg > max[s.exercise_name]) {
           max[s.exercise_name] = s.weight_kg;
@@ -174,9 +231,68 @@ export default function WorkoutDetail() {
 
   function isPR(s: SetRow): boolean {
     if (s.skipped || s.weight_kg === null || s.weight_kg <= 0) return false;
+    if (s.is_warmup) return false;
     const prev = priorMax[s.exercise_name];
     return prev !== undefined && s.weight_kg > prev;
   }
+
+  useEffect(() => {
+    if (!workout || sets.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const exerciseNames = [...new Set(sets.map((s) => s.exercise_name))];
+      const { data: priorWorkouts } = await supabase
+        .from("workouts")
+        .select("id, date")
+        .lt("date", workout.date)
+        .order("date", { ascending: false })
+        .limit(120);
+      const workouts = ((priorWorkouts ?? []) as { id: string; date: string }[]);
+      const ids = workouts.map((w) => w.id);
+      if (ids.length === 0) {
+        if (!cancelled) setPreviousByExercise({});
+        return;
+      }
+
+      const dateByWorkout = new Map(workouts.map((w) => [w.id, w.date]));
+      const { data: priorSets } = await supabase
+        .from("sets")
+        .select("*")
+        .in("exercise_name", exerciseNames)
+        .in("workout_id", ids)
+        .eq("skipped", false);
+      if (cancelled) return;
+
+      const latestDateByExercise = new Map<string, string>();
+      const groupedSets = new Map<string, SetRow[]>();
+      for (const row of (priorSets ?? []) as SetRow[]) {
+        if (row.is_warmup) continue;
+        const date = dateByWorkout.get(row.workout_id);
+        if (!date) continue;
+        const currentDate = latestDateByExercise.get(row.exercise_name);
+        if (!currentDate || date > currentDate) {
+          latestDateByExercise.set(row.exercise_name, date);
+          groupedSets.set(row.exercise_name, [row]);
+        } else if (date === currentDate) {
+          const list = groupedSets.get(row.exercise_name) ?? [];
+          list.push(row);
+          groupedSets.set(row.exercise_name, list);
+        }
+      }
+
+      const next: Record<string, PreviousExercise> = {};
+      for (const [name, rows] of groupedSets) {
+        next[name] = {
+          date: latestDateByExercise.get(name) ?? "",
+          sets: rows
+            .sort((a, b) => (a.set_number ?? 0) - (b.set_number ?? 0))
+            .map((r) => ({ weight_kg: r.weight_kg, reps: r.reps })),
+        };
+      }
+      setPreviousByExercise(next);
+    })();
+    return () => { cancelled = true; };
+  }, [workout, sets]);
 
   // Fetch library images for the exercises used in this workout. Custom
   // exercises in the program have exercise_name = "machine_hip_thrust" but
@@ -233,6 +349,7 @@ export default function WorkoutDetail() {
         weight_kg: s.weight_kg !== null ? String(s.weight_kg) : "",
         reps: s.reps !== null ? String(s.reps) : "",
         skipped: s.skipped,
+        is_warmup: !!s.is_warmup,
       };
     }
     setEditedSets(map);
@@ -266,6 +383,7 @@ export default function WorkoutDetail() {
         const rps = e.reps === "" ? null : parseInt(e.reps, 10);
         const wasChanged =
           e.skipped !== s.skipped ||
+          e.is_warmup !== !!s.is_warmup ||
           (wkg ?? null) !== s.weight_kg ||
           (rps ?? null) !== s.reps;
         if (wasChanged) {
@@ -273,6 +391,7 @@ export default function WorkoutDetail() {
             weight_kg: e.skipped ? null : (isNaN(wkg as number) ? null : wkg),
             reps: e.skipped ? null : (isNaN(rps as number) ? null : rps),
             skipped: e.skipped,
+            is_warmup: e.is_warmup,
             is_deviation: true,
           }).eq("id", s.id);
           if (sErr) failures.push(`set ${s.set_number ?? "?"}: ${sErr.message}`);
@@ -292,7 +411,7 @@ export default function WorkoutDetail() {
           .order("set_number", { ascending: true, nullsFirst: true }),
       ]);
       if (w) setWorkout(w);
-      if (s) setSets(s);
+      if (s) setSets(sortSetRows(s as SetRow[]));
       setEditing(false);
     } finally {
       setSaving(false);
@@ -309,6 +428,159 @@ export default function WorkoutDetail() {
       return;
     }
     navigate("/workouts");
+  }
+
+  async function updateProgramFromWorkout() {
+    if (!workout || updatingProgram || editing || workout.workout_type === "run") return;
+    const ok = confirm("Update Program targets from this saved workout?");
+    if (!ok) return;
+
+    setUpdatingProgram(true);
+    setProgramUpdateMessage("");
+    try {
+      const { data: programRows, error } = await supabase
+        .from("program")
+        .select("id, exercise_name, to_failure")
+        .eq("workout_type", workout.workout_type);
+      if (error) {
+        alert(error.message);
+        return;
+      }
+
+      const programByName = new Map(
+        ((programRows ?? []) as { id: number; exercise_name: string; to_failure?: boolean | null }[])
+          .map((row) => [row.exercise_name, row]),
+      );
+      let updated = 0;
+
+      for (const { name, rows } of grouped) {
+        const programRow = programByName.get(name);
+        if (!programRow) continue;
+        const working = rows.filter((r) => !r.is_warmup && !r.skipped);
+        if (working.length === 0) continue;
+
+        const reps = working
+          .map((r) => r.reps)
+          .filter((rep): rep is number => rep !== null);
+        const weights = working
+          .map((r) => r.weight_kg)
+          .filter((weight): weight is number => weight !== null);
+
+        const patch: {
+          default_sets: number;
+          default_reps?: number | null;
+          default_weight_kg?: number | null;
+          per_set_weights?: number[] | null;
+        } = { default_sets: working.length };
+
+        const commonReps = mostCommon(reps);
+        if (!programRow.to_failure && commonReps !== null) {
+          patch.default_reps = commonReps;
+        }
+
+        if (weights.length === working.length) {
+          const unique = [...new Set(weights)];
+          if (unique.length === 1) {
+            patch.default_weight_kg = unique[0];
+            patch.per_set_weights = null;
+          } else {
+            patch.default_weight_kg = weights[0];
+            patch.per_set_weights = weights;
+          }
+        } else if (weights.length === 0) {
+          patch.default_weight_kg = null;
+          patch.per_set_weights = null;
+        }
+
+        const { error: updateError } = await supabase
+          .from("program")
+          .update(patch)
+          .eq("id", programRow.id);
+        if (updateError) {
+          alert(updateError.message);
+          return;
+        }
+        updated += 1;
+      }
+
+      setProgramUpdateMessage(
+        updated > 0
+          ? `Program updated from ${updated} ${updated === 1 ? "exercise" : "exercises"}.`
+          : "No matching program exercises to update.",
+      );
+    } finally {
+      setUpdatingProgram(false);
+    }
+  }
+
+  async function addSetToExercise(exerciseName: string, isWarmup: boolean) {
+    if (!workout) return;
+    const exerciseRows = sets.filter((s) => s.exercise_name === exerciseName);
+    const sameKindRows = exerciseRows.filter((s) => !!s.is_warmup === isWarmup);
+    const workingRows = exerciseRows.filter((s) => !s.is_warmup && !s.skipped);
+    const source = isWarmup
+      ? workingRows[0] ?? exerciseRows[0]
+      : workingRows[workingRows.length - 1] ?? exerciseRows[exerciseRows.length - 1];
+    const sourceWeight = source?.weight_kg ?? null;
+    const sourceReps = source?.reps ?? null;
+    const timed = isTimedExerciseName(exerciseName);
+    const nextSetNumber =
+      sameKindRows.reduce((max, row) => Math.max(max, row.set_number ?? 0), 0) + 1;
+
+    const insert = {
+      workout_id: workout.id,
+      exercise_name: exerciseName,
+      weight_kg: isWarmup && sourceWeight !== null
+        ? roundToPlate(sourceWeight * 0.5)
+        : sourceWeight,
+      reps: isWarmup
+        ? (timed ? Math.min(sourceReps ?? 60, 30) : 5)
+        : sourceReps,
+      set_number: nextSetNumber,
+      skipped: false,
+      is_warmup: isWarmup,
+      is_deviation: true,
+    };
+
+    const { data, error } = await supabase
+      .from("sets")
+      .insert(insert)
+      .select("*")
+      .single();
+    if (error) {
+      alert(`Couldn't add set: ${error.message}`);
+      return;
+    }
+
+    const row = data as SetRow;
+    setSets((prev) => sortSetRows([...prev, row]));
+    setEditedSets((prev) => ({
+      ...prev,
+      [row.id]: {
+        weight_kg: row.weight_kg !== null ? String(row.weight_kg) : "",
+        reps: row.reps !== null ? String(row.reps) : "",
+        skipped: row.skipped,
+        is_warmup: !!row.is_warmup,
+      },
+    }));
+  }
+
+  async function deleteSet(setId: string) {
+    const ok = confirm("Delete this set?");
+    if (!ok) return;
+
+    const { error } = await supabase.from("sets").delete().eq("id", setId);
+    if (error) {
+      alert(`Couldn't delete set: ${error.message}`);
+      return;
+    }
+
+    setSets((prev) => prev.filter((s) => s.id !== setId));
+    setEditedSets((prev) => {
+      const next = { ...prev };
+      delete next[setId];
+      return next;
+    });
   }
 
   const grouped = useMemo(() => {
@@ -332,11 +604,12 @@ export default function WorkoutDetail() {
   if (error) return <p className="text-red-400 text-sm">{error}</p>;
   if (!workout) return <p className="text-neutral-500">Not found.</p>;
 
-  const skippedCount = sets.filter((s) => s.skipped).length;
+  const workingSets = sets.filter((s) => !s.is_warmup);
+  const skippedCount = workingSets.filter((s) => s.skipped).length;
   const adjustedExerciseCount = grouped.filter(({ rows }) =>
-    rows.some((r) => r.is_deviation),
+    rows.some((r) => !r.is_warmup && r.is_deviation),
   ).length;
-  const totalVolume = sets.reduce((sum, s) => {
+  const totalVolume = workingSets.reduce((sum, s) => {
     if (s.skipped) return sum;
     return sum + (s.weight_kg ?? 0) * (s.reps ?? 0);
   }, 0);
@@ -390,9 +663,9 @@ export default function WorkoutDetail() {
         </h2>
       </header>
 
-      {(sets.length > 0 || adjustedExerciseCount > 0 || skippedCount > 0) && (
+      {(workingSets.length > 0 || adjustedExerciseCount > 0 || skippedCount > 0) && (
         <div className="grid grid-cols-3 gap-2">
-          <StatTile label="Sets" value={String(sets.length - skippedCount)} />
+          <StatTile label="Sets" value={String(workingSets.length - skippedCount)} />
           <StatTile
             label="Adjusted"
             value={String(adjustedExerciseCount)}
@@ -475,10 +748,37 @@ export default function WorkoutDetail() {
                 }
                 isPR={isPR}
                 images={libraryImages[name]}
+                previous={previousByExercise[name]}
+                onAddSet={addSetToExercise}
+                onDeleteSet={deleteSet}
               />
             ))}
           </div>
         </section>
+      )}
+
+      {!editing && workout.workout_type !== "run" && grouped.length > 0 && (
+        <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">Use this as Program</p>
+              <p className="text-xs text-neutral-500 mt-1">
+                Copies saved working sets, reps, and weights into your Program.
+              </p>
+              {programUpdateMessage && (
+                <p className="text-xs text-emerald-400 mt-2">{programUpdateMessage}</p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={updateProgramFromWorkout}
+              disabled={updatingProgram}
+              className="shrink-0 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-black disabled:opacity-40"
+            >
+              {updatingProgram ? "Updating" : "Update"}
+            </button>
+          </div>
+        </div>
       )}
 
       {editing && (
@@ -528,6 +828,9 @@ function ExerciseBlock({
   onEditChange,
   isPR,
   images,
+  previous,
+  onAddSet,
+  onDeleteSet,
 }: {
   name: string;
   rows: SetRow[];
@@ -536,6 +839,9 @@ function ExerciseBlock({
   onEditChange: (setId: string, v: EditedSet) => void;
   isPR: (s: SetRow) => boolean;
   images?: string[];
+  previous?: PreviousExercise;
+  onAddSet: (exerciseName: string, isWarmup: boolean) => Promise<void>;
+  onDeleteSet: (setId: string) => Promise<void>;
 }) {
   // When editing, expanded by default. Otherwise collapsed.
   const [expanded, setExpanded] = useState(editing);
@@ -545,15 +851,47 @@ function ExerciseBlock({
     if (editing) setExpanded(true);
   }, [editing]);
 
+  const isCurrentWarmup = (row: SetRow) =>
+    editing ? !!editedSets[row.id]?.is_warmup : !!row.is_warmup;
+  const isCurrentSkipped = (row: SetRow) =>
+    editing ? !!editedSets[row.id]?.skipped : row.skipped;
+  const workingRows = rows.filter((r) => !isCurrentWarmup(r));
   const allSkipped = editing
-    ? rows.every((r) => editedSets[r.id]?.skipped)
-    : rows.every((r) => r.skipped);
-  const anyAdjusted = rows.some((r) => r.is_deviation);
+    ? workingRows.every(isCurrentSkipped)
+    : workingRows.every((r) => r.skipped);
+  const anyAdjusted = workingRows.some((r) => r.is_deviation);
   const anyPR = rows.some(isPR);
   const done = editing
-    ? rows.filter((r) => !editedSets[r.id]?.skipped).length
-    : rows.filter((r) => !r.skipped).length;
+    ? workingRows.filter((r) => !isCurrentSkipped(r)).length
+    : workingRows.filter((r) => !r.skipped).length;
   const summary = exerciseSummary(rows);
+  const warmupCount = rows.filter((r) => isCurrentWarmup(r) && !isCurrentSkipped(r)).length;
+  const firstWorking = workingRows[0];
+  const firstEdited = firstWorking ? editedSets[firstWorking.id] : undefined;
+
+  function copyFirstSetToRest() {
+    if (!firstEdited || workingRows.length < 2) return;
+    for (const row of workingRows.slice(1)) {
+      const current = editedSets[row.id];
+      onEditChange(row.id, {
+        ...firstEdited,
+        is_warmup: current?.is_warmup ?? !!row.is_warmup,
+      });
+    }
+  }
+
+  function copyPreviousWorkout() {
+    if (!previous || previous.sets.length === 0) return;
+    workingRows.forEach((row, index) => {
+      const source = previous.sets[index] ?? previous.sets[previous.sets.length - 1];
+      onEditChange(row.id, {
+        weight_kg: source.weight_kg !== null ? String(source.weight_kg) : "",
+        reps: source.reps !== null ? String(source.reps) : "",
+        skipped: false,
+        is_warmup: editedSets[row.id]?.is_warmup ?? !!row.is_warmup,
+      });
+    });
+  }
 
   return (
     <div className="rounded-2xl overflow-hidden border border-neutral-800 bg-neutral-900">
@@ -581,10 +919,20 @@ function ExerciseBlock({
             <span>
               {allSkipped ? "All skipped" : `${done} ${done === 1 ? "set" : "sets"} · ${summary}`}
             </span>
+            {warmupCount > 0 && (
+              <span className="text-[10px] text-neutral-500">
+                · {warmupCount} {warmupCount === 1 ? "warmup" : "warmups"}
+              </span>
+            )}
             {anyAdjusted && (
               <span className="text-[10px] text-neutral-500">· adjusted</span>
             )}
           </div>
+          {previous && (
+            <div className="text-[10px] text-neutral-600 mt-1 truncate">
+              Last: {valuesSummary(previous.sets, name)}
+            </div>
+          )}
         </div>
         <ChevronDownIcon
           className={`w-4 h-4 text-neutral-600 shrink-0 transition-transform ${
@@ -608,44 +956,115 @@ function ExerciseBlock({
             ))}
           </div>
         )}
-        <ul className="divide-y divide-neutral-800/70 border-t border-neutral-800/70">
-          {rows.map((r, i) => (
-            <li
-              key={r.id}
-              className={`flex items-center gap-2 px-4 py-2 text-sm ${
-                (editing ? editedSets[r.id]?.skipped : r.skipped) ? "opacity-50" : ""
-              }`}
+        {editing && (workingRows.length > 1 || previous) && (
+          <div className="border-t border-neutral-800/70 px-4 py-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {previous && (
+              <button
+                type="button"
+                onClick={copyPreviousWorkout}
+                className="rounded-lg border border-neutral-700 bg-neutral-800/60 px-3 py-2 text-xs font-medium text-neutral-300 hover:bg-neutral-800 active:bg-neutral-700"
+              >
+                Copy last workout
+              </button>
+            )}
+            {workingRows.length > 1 && (
+              <button
+                type="button"
+                onClick={copyFirstSetToRest}
+                className="rounded-lg border border-neutral-700 bg-neutral-800/60 px-3 py-2 text-xs font-medium text-neutral-300 hover:bg-neutral-800 active:bg-neutral-700"
+              >
+                Copy set 1 to all sets
+              </button>
+            )}
+          </div>
+        )}
+        {editing && (
+          <div className="border-t border-neutral-800/70 px-4 py-2 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => onAddSet(name, true)}
+              className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-200 hover:bg-amber-500/15 active:bg-amber-500/20"
             >
-              <span className="text-neutral-500 text-xs w-10 shrink-0">
-                Set {r.set_number ?? i + 1}
-              </span>
-              {editing ? (
-                <EditSetRow
-                  setId={r.id}
-                  exerciseName={r.exercise_name}
-                  value={editedSets[r.id]}
-                  onChange={(v) => onEditChange(r.id, v)}
-                />
-              ) : (
-                <span className="ml-auto flex items-center gap-1.5">
-                  {isPR(r) && (
-                    <span className="text-[9px] uppercase tracking-wider font-bold px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
-                      PR
-                    </span>
-                  )}
-                  <span
-                    className={
-                      r.skipped
-                        ? "text-neutral-500 line-through"
-                        : "text-neutral-100"
-                    }
-                  >
-                    {formatSet(r)}
+              Add warmup
+            </button>
+            <button
+              type="button"
+              onClick={() => onAddSet(name, false)}
+              className="rounded-lg border border-neutral-700 bg-neutral-800/60 px-3 py-2 text-xs font-medium text-neutral-300 hover:bg-neutral-800 active:bg-neutral-700"
+            >
+              Add set
+            </button>
+          </div>
+        )}
+        <ul className="divide-y divide-neutral-800/70 border-t border-neutral-800/70">
+          {rows.map((r, i) => {
+            const edited = editedSets[r.id];
+            const isWarmup = editing ? !!edited?.is_warmup : !!r.is_warmup;
+            const isSkipped = editing ? !!edited?.skipped : r.skipped;
+            return (
+              <li
+                key={r.id}
+                className={`${editing ? "px-4 py-3 text-sm" : "flex items-center gap-2 px-4 py-2 text-sm"} ${
+                  isSkipped ? "opacity-50" : ""
+                }`}
+              >
+                {editing ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-neutral-500 text-xs">
+                        {isWarmup ? "Warmup" : "Set"} {r.set_number ?? i + 1}
+                      </span>
+                      {isWarmup && (
+                        <span className="text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300">
+                          warmup
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => onDeleteSet(r.id)}
+                        className="ml-auto text-[10px] font-medium text-red-400/80 hover:text-red-300"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                    <EditSetRow
+                      setId={r.id}
+                      exerciseName={r.exercise_name}
+                      value={edited}
+                      onChange={(v) => onEditChange(r.id, v)}
+                    />
+                  </div>
+                ) : (
+                  <>
+                  <span className="text-neutral-500 text-xs w-10 shrink-0">
+                    {isWarmup ? "WU" : "Set"} {r.set_number ?? i + 1}
                   </span>
-                </span>
-              )}
-            </li>
-          ))}
+                  <span className="ml-auto flex items-center gap-1.5">
+                    {isWarmup && (
+                      <span className="text-[9px] uppercase tracking-wider font-bold px-1 py-0.5 rounded bg-amber-500/15 text-amber-300">
+                        WU
+                      </span>
+                    )}
+                    {isPR(r) && (
+                      <span className="text-[9px] uppercase tracking-wider font-bold px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                        PR
+                      </span>
+                    )}
+                    <span
+                      className={
+                        r.skipped
+                          ? "text-neutral-500 line-through"
+                          : "text-neutral-100"
+                      }
+                    >
+                      {formatSet(r)}
+                    </span>
+                  </span>
+                  </>
+                )}
+              </li>
+            );
+          })}
         </ul>
         <Link
           to={`/exercise/${encodeURIComponent(name)}`}
@@ -713,36 +1132,123 @@ function EditSetRow({
   onChange: (v: EditedSet) => void;
 }) {
   const timed = isTimedExerciseName(exerciseName);
+  if (!value) return null;
+
   return (
-    <div className="flex items-center gap-2 ml-auto">
-      <button
-        onClick={() => onChange({ ...value, skipped: !value.skipped })}
-        className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded border transition-colors ${
-          value.skipped
-            ? "border-neutral-600 text-neutral-400 bg-neutral-800"
-            : "border-neutral-700 text-neutral-500"
-        }`}
-      >
-        {value.skipped ? "skipped" : "skip"}
-      </button>
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => onChange({ ...value, is_warmup: !value.is_warmup })}
+          className={`rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
+            value.is_warmup
+              ? "border-amber-500/40 bg-amber-500/15 text-amber-200"
+              : "border-neutral-700 bg-neutral-800/40 text-neutral-300 hover:bg-neutral-800"
+          }`}
+        >
+          {value.is_warmup ? "Warmup set" : "Working set"}
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange({ ...value, skipped: !value.skipped })}
+          className={`rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
+            value.skipped
+              ? "border-neutral-600 bg-neutral-800 text-neutral-300"
+              : "border-neutral-700 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300"
+          }`}
+        >
+          {value.skipped ? "Skipped" : "Mark skipped"}
+        </button>
+      </div>
       {!value.skipped && (
-        <>
-          <input
-            type="number"
+        <div className="grid grid-cols-2 gap-2">
+          <SetStepperField
+            label="kg"
             value={value.weight_kg}
-            onChange={(e) => onChange({ ...value, weight_kg: e.target.value })}
             placeholder="kg"
-            className="w-14 bg-neutral-800 border border-neutral-700 rounded-lg px-2 py-1 text-sm text-right text-neutral-100 outline-none focus:border-neutral-500"
+            step={2.5}
+            inputMode="decimal"
+            onMinus={() => onChange({ ...value, weight_kg: stepString(value.weight_kg, -2.5, 0) })}
+            onPlus={() => onChange({ ...value, weight_kg: stepString(value.weight_kg, 2.5, 0) })}
+            onInput={(next) => onChange({ ...value, weight_kg: next })}
           />
-          <input
-            type="number"
+          <SetStepperField
+            label={timed ? "sec" : "reps"}
             value={value.reps}
-            onChange={(e) => onChange({ ...value, reps: e.target.value })}
             placeholder={timed ? "sec" : "reps"}
-            className="w-14 bg-neutral-800 border border-neutral-700 rounded-lg px-2 py-1 text-sm text-right text-neutral-100 outline-none focus:border-neutral-500"
+            step={timed ? 5 : 1}
+            inputMode="numeric"
+            onMinus={() =>
+              onChange({
+                ...value,
+                reps: stepIntString(value.reps, timed ? -5 : -1, timed ? 60 : 1),
+              })
+            }
+            onPlus={() =>
+              onChange({
+                ...value,
+                reps: stepIntString(value.reps, timed ? 5 : 1, timed ? 60 : 1),
+              })
+            }
+            onInput={(next) => onChange({ ...value, reps: next })}
           />
-        </>
+        </div>
       )}
+    </div>
+  );
+}
+
+function SetStepperField({
+  label,
+  value,
+  placeholder,
+  step,
+  inputMode,
+  onMinus,
+  onPlus,
+  onInput,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  step: number;
+  inputMode: "decimal" | "numeric";
+  onMinus: () => void;
+  onPlus: () => void;
+  onInput: (next: string) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-1 text-[10px] uppercase tracking-wider font-semibold text-neutral-500">
+        {label}
+      </div>
+      <div className="flex overflow-hidden rounded-lg bg-neutral-800 border border-neutral-700 focus-within:border-neutral-500">
+        <button
+          type="button"
+          onClick={onMinus}
+          className="h-10 w-10 shrink-0 text-neutral-300 hover:bg-neutral-700 active:bg-neutral-600"
+          aria-label={`Decrease ${label}`}
+        >
+          -
+        </button>
+        <input
+          type="number"
+          inputMode={inputMode}
+          step={step}
+          value={value}
+          onChange={(e) => onInput(e.target.value)}
+          placeholder={placeholder}
+          className="min-w-0 flex-1 bg-transparent px-1 text-center text-base text-neutral-100 outline-none placeholder-neutral-600"
+        />
+        <button
+          type="button"
+          onClick={onPlus}
+          className="h-10 w-10 shrink-0 flex items-center justify-center text-neutral-300 hover:bg-neutral-700 active:bg-neutral-600"
+          aria-label={`Increase ${label}`}
+        >
+          <PlusIcon className="w-4 h-4" />
+        </button>
+      </div>
     </div>
   );
 }

@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS program (
     default_weight_kg  FLOAT,
     display_order      INT   NOT NULL DEFAULT 0,
     is_bodyweight_base BOOLEAN NOT NULL DEFAULT FALSE,
+    warmup_enabled     BOOLEAN NOT NULL DEFAULT TRUE,
     UNIQUE (workout_type, exercise_name)
 );
 
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS sets (
     exercise_name TEXT NOT NULL,
     weight_kg     FLOAT,
     skipped       BOOLEAN NOT NULL DEFAULT FALSE,
+    is_warmup     BOOLEAN NOT NULL DEFAULT FALSE,
     is_deviation  BOOLEAN NOT NULL DEFAULT FALSE,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -48,6 +50,7 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE INDEX IF NOT EXISTS idx_workouts_date     ON workouts (date DESC);
 CREATE INDEX IF NOT EXISTS idx_workouts_type     ON workouts (workout_type);
 CREATE INDEX IF NOT EXISTS idx_sets_workout_id   ON sets     (workout_id);
+CREATE INDEX IF NOT EXISTS idx_sets_warmup       ON sets     (workout_id, exercise_name, is_warmup DESC, set_number);
 CREATE INDEX IF NOT EXISTS idx_runs_workout_id   ON runs     (workout_id);
 CREATE INDEX IF NOT EXISTS idx_program_type      ON program  (workout_type, display_order);
 

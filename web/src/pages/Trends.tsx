@@ -105,6 +105,7 @@ export default function Trends() {
   return (
     <div className="pb-4 space-y-4">
       <WeeklySummary />
+      <RecentWeightPRs />
       <MostImproved />
       <PRDashboard />
       <WeeklyVolume />
@@ -112,6 +113,125 @@ export default function Trends() {
       <MuscleRecovery recovery={recovery} loading={loading} />
       <BodyWeight />
       <ProgressPhotos />
+    </div>
+  );
+}
+
+// ── Recent real PRs ───────────────────────────────────────────────────────────
+
+type RecentPR = {
+  exercise_name: string;
+  date: string;
+  weight: number;
+  reps: number | null;
+  previous: number;
+};
+
+function RecentWeightPRs() {
+  const [items, setItems] = useState<RecentPR[] | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const since = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+      const { data } = await supabase
+        .from("sets")
+        .select("exercise_name, weight_kg, reps, skipped, is_warmup, workouts!inner(date)")
+        .eq("skipped", false)
+        .not("weight_kg", "is", null)
+        .gt("weight_kg", 0);
+
+      const rows = (data ?? []) as {
+        exercise_name: string;
+        weight_kg: number;
+        reps: number | null;
+        skipped: boolean;
+        is_warmup?: boolean;
+        workouts: { date: string } | { date: string }[];
+      }[];
+
+      const byExercise = new Map<string, Map<string, { weight: number; reps: number | null }>>();
+      for (const r of rows) {
+        if (r.is_warmup) continue;
+        const date = Array.isArray(r.workouts) ? r.workouts[0]?.date : r.workouts?.date;
+        if (!date) continue;
+        const byDate = byExercise.get(r.exercise_name) ?? new Map<string, { weight: number; reps: number | null }>();
+        const current = byDate.get(date);
+        if (!current || r.weight_kg > current.weight || (r.weight_kg === current.weight && (r.reps ?? 0) > (current.reps ?? 0))) {
+          byDate.set(date, { weight: r.weight_kg, reps: r.reps ?? null });
+        }
+        byExercise.set(r.exercise_name, byDate);
+      }
+
+      const prs: RecentPR[] = [];
+      for (const [exercise_name, byDate] of byExercise) {
+        let best = 0;
+        const ordered = [...byDate.entries()]
+          .map(([date, row]) => ({ date, ...row }))
+          .sort((a, b) => a.date.localeCompare(b.date));
+        for (const row of ordered) {
+          if (row.weight > best) {
+            if (best > 0 && row.date >= since) {
+              prs.push({
+                exercise_name,
+                date: row.date,
+                weight: row.weight,
+                reps: row.reps,
+                previous: best,
+              });
+            }
+            best = row.weight;
+          }
+        }
+      }
+
+      setItems(
+        prs
+          .sort((a, b) => b.date.localeCompare(a.date) || (b.weight - b.previous) - (a.weight - a.previous))
+          .slice(0, 5),
+      );
+    })();
+  }, []);
+
+  if (items === null) {
+    return <div className="rounded-2xl border border-neutral-800 bg-neutral-900 h-28 animate-pulse" />;
+  }
+  if (items.length === 0) return null;
+
+  return (
+    <div className="rounded-2xl border border-neutral-800 bg-neutral-900 overflow-hidden">
+      <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-neutral-800">
+        <div>
+          <h2 className="font-semibold text-sm">Recent weight PRs</h2>
+          <p className="text-[11px] text-neutral-500 mt-0.5">actual heaviest set, last 90 days</p>
+        </div>
+        <span className="text-[10px] text-neutral-500">{items.length}</span>
+      </div>
+      <div>
+        {items.map((p, i) => (
+          <Link
+            key={`${p.exercise_name}-${p.date}-${p.weight}`}
+            to={`/exercise/${encodeURIComponent(p.exercise_name)}`}
+            className={`flex items-center gap-3 px-4 py-2.5 hover:bg-neutral-800/40 transition-colors ${
+              i < items.length - 1 ? "border-b border-neutral-800" : ""
+            }`}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="text-sm truncate">{labelizeName(p.exercise_name)}</div>
+              <div className="text-[10px] text-neutral-500">
+                {formatDateShort(p.date)} · {p.reps ? `${p.reps} reps` : "logged set"}
+              </div>
+            </div>
+            <div className="text-right shrink-0">
+              <div className="text-sm font-semibold text-emerald-400">
+                {formatKg(p.weight)} kg
+              </div>
+              <div className="text-[10px] text-neutral-500">
+                +{formatKg(p.weight - p.previous)}
+              </div>
+            </div>
+          </Link>
+        ))}
+      </div>
     </div>
   );
 }
@@ -138,7 +258,7 @@ function MostImproved() {
 
       const { data: sets } = await supabase
         .from("sets")
-        .select("exercise_name, weight_kg, reps, skipped, workout_id")
+        .select("*")
         .in("workout_id", ids)
         .eq("skipped", false)
         .not("weight_kg", "is", null)
@@ -149,20 +269,20 @@ function MostImproved() {
         reps: number | null;
         skipped: boolean;
         workout_id: string;
+        is_warmup?: boolean;
       }[];
 
-      // Group: exercise → { thisMax, lastMax } best e1RM in each window
+      // Group: exercise -> { thisMax, lastMax } heaviest logged working set in each window
       const stats = new Map<string, { thisMax: number; lastMax: number }>();
       for (const r of rows) {
+        if (r.is_warmup) continue;
         const date = wmap.get(r.workout_id);
         if (!date) continue;
-        if (r.reps === null || r.reps <= 0) continue;
-        const est = e1rm(r.weight_kg, r.reps);
         const cur = stats.get(r.exercise_name) ?? { thisMax: 0, lastMax: 0 };
         if (date >= thisMonthStart) {
-          if (est > cur.thisMax) cur.thisMax = est;
+          if (r.weight_kg > cur.thisMax) cur.thisMax = r.weight_kg;
         } else {
-          if (est > cur.lastMax) cur.lastMax = est;
+          if (r.weight_kg > cur.lastMax) cur.lastMax = r.weight_kg;
         }
         stats.set(r.exercise_name, cur);
       }
@@ -183,7 +303,7 @@ function MostImproved() {
     <div className="rounded-2xl border border-neutral-800 bg-neutral-900 overflow-hidden">
       <div className="px-4 pt-4 pb-3 border-b border-neutral-800">
         <h2 className="font-semibold text-sm">Most improved this month</h2>
-        <p className="text-[11px] text-neutral-500 mt-0.5">based on estimated 1RM</p>
+        <p className="text-[11px] text-neutral-500 mt-0.5">based on logged max weight</p>
       </div>
       <div>
         {items.map((p, i) => (
@@ -196,10 +316,10 @@ function MostImproved() {
           >
             <div className="min-w-0 flex-1">
               <div className="text-sm truncate">{labelizeName(p.name)}</div>
-              <div className="text-[10px] text-neutral-500">now ~{Math.round(p.current)} kg 1RM</div>
+              <div className="text-[10px] text-neutral-500">now {formatKg(p.current)} kg max</div>
             </div>
             <span className="text-sm font-semibold text-emerald-400">
-              +{p.delta.toFixed(1)} <span className="text-[10px] text-neutral-500">kg</span>
+              +{formatKg(p.delta)} <span className="text-[10px] text-neutral-500">kg</span>
             </span>
           </Link>
         ))}
@@ -210,18 +330,24 @@ function MostImproved() {
 
 // ── PR dashboard ──────────────────────────────────────────────────────────────
 
-function e1rm(weight: number, reps: number): number {
-  if (reps <= 0 || weight <= 0) return 0;
-  if (reps === 1) return weight;
-  return weight * (1 + reps / 30);
-}
-
 function labelizeName(name: string): string {
-  const s = name.replace(/_/g, " ");
+  const clean = name.replace(/_custom_\d+$/, "");
+  const s = clean.replace(/_+/g, " ").replace(/\s+/g, " ").trim();
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-type PR = { exercise_name: string; weight: number; reps: number; e1rm: number };
+function formatKg(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, "");
+}
+
+function formatDateShort(date: string): string {
+  return new Date(`${date}T12:00:00`).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+type PR = { exercise_name: string; weight: number; reps: number | null };
 
 function PRDashboard() {
   const [prs, setPrs] = useState<PR[] | null>(null);
@@ -230,7 +356,7 @@ function PRDashboard() {
     (async () => {
       const { data } = await supabase
         .from("sets")
-        .select("exercise_name, weight_kg, reps, skipped")
+        .select("*")
         .eq("skipped", false)
         .not("weight_kg", "is", null)
         .gt("weight_kg", 0);
@@ -239,23 +365,29 @@ function PRDashboard() {
         weight_kg: number;
         reps: number | null;
         skipped: boolean;
+        is_warmup?: boolean;
       }[];
 
       const byExercise = new Map<string, PR>();
       for (const r of rows) {
-        if (r.reps === null || r.reps <= 0) continue;
-        const est = e1rm(r.weight_kg, r.reps);
+        if (r.is_warmup) continue;
         const cur = byExercise.get(r.exercise_name);
-        if (!cur || est > cur.e1rm) {
+        const reps = r.reps ?? null;
+        if (
+          !cur ||
+          r.weight_kg > cur.weight ||
+          (r.weight_kg === cur.weight && (reps ?? 0) > (cur.reps ?? 0))
+        ) {
           byExercise.set(r.exercise_name, {
             exercise_name: r.exercise_name,
             weight: r.weight_kg,
-            reps: r.reps,
-            e1rm: est,
+            reps,
           });
         }
       }
-      const sorted = [...byExercise.values()].sort((a, b) => b.e1rm - a.e1rm);
+      const sorted = [...byExercise.values()].sort(
+        (a, b) => b.weight - a.weight || (b.reps ?? 0) - (a.reps ?? 0),
+      );
       setPrs(sorted);
     })();
   }, []);
@@ -269,8 +401,8 @@ function PRDashboard() {
   return (
     <div className="rounded-2xl border border-neutral-800 bg-neutral-900 overflow-hidden">
       <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-neutral-800">
-        <h2 className="font-semibold text-sm">Top PRs</h2>
-        <span className="text-[10px] text-neutral-500">est. 1RM</span>
+        <h2 className="font-semibold text-sm">Best logged weights</h2>
+        <span className="text-[10px] text-neutral-500">heaviest set</span>
       </div>
       <div>
         {top.map((p, i) => (
@@ -285,11 +417,11 @@ function PRDashboard() {
             <div className="min-w-0 flex-1">
               <div className="text-sm truncate">{labelizeName(p.exercise_name)}</div>
               <div className="text-[10px] text-neutral-500">
-                from {p.weight} kg × {p.reps}
+                {p.reps ? `for ${p.reps} reps` : "logged set"}
               </div>
             </div>
             <span className="text-sm font-semibold text-emerald-400 shrink-0">
-              {Math.round(p.e1rm)} <span className="text-[10px] text-neutral-500">kg</span>
+              {formatKg(p.weight)} <span className="text-[10px] text-neutral-500">kg</span>
             </span>
           </Link>
         ))}
@@ -492,11 +624,17 @@ function WeeklyVolume() {
       );
       const ids = [...workoutMap.keys()];
 
-      let sets: { workout_id: string; weight_kg: number | null; reps: number | null; skipped: boolean }[] = [];
+      let sets: {
+        workout_id: string;
+        weight_kg: number | null;
+        reps: number | null;
+        skipped: boolean;
+        is_warmup?: boolean;
+      }[] = [];
       if (ids.length > 0) {
         const { data } = await supabase
           .from("sets")
-          .select("workout_id, weight_kg, reps, skipped")
+          .select("*")
           .in("workout_id", ids);
         sets = (data as typeof sets) ?? [];
       }
@@ -512,7 +650,7 @@ function WeeklyVolume() {
 
       // For each set, find its week + workout type, add volume
       for (const s of sets) {
-        if (s.skipped) continue;
+        if (s.skipped || s.is_warmup) continue;
         const w = workoutMap.get(s.workout_id);
         if (!w) continue;
         const wDate = new Date(`${w.date}T12:00:00`);
@@ -634,11 +772,17 @@ function WeeklySummary() {
       }
       setStreak(count);
 
-      let sets: { workout_id: string; weight_kg: number | null; reps: number | null; skipped: boolean }[] = [];
+      let sets: {
+        workout_id: string;
+        weight_kg: number | null;
+        reps: number | null;
+        skipped: boolean;
+        is_warmup?: boolean;
+      }[] = [];
       if (thisIds.size > 0 || lastIds.size > 0) {
         const { data } = await supabase
           .from("sets")
-          .select("workout_id, weight_kg, reps, skipped")
+          .select("*")
           .in("workout_id", [...thisIds, ...lastIds]);
         sets = (data as typeof sets) ?? [];
       }
@@ -646,7 +790,7 @@ function WeeklySummary() {
       const tw: Stat = { workouts: thisIds.size, sets: 0, volume: 0 };
       const lw: Stat = { workouts: lastIds.size, sets: 0, volume: 0 };
       for (const s of sets) {
-        if (s.skipped) continue;
+        if (s.skipped || s.is_warmup) continue;
         const bucket = thisIds.has(s.workout_id) ? tw : lw;
         bucket.sets += 1;
         bucket.volume += (s.weight_kg ?? 0) * (s.reps ?? 0);
@@ -666,7 +810,7 @@ function WeeklySummary() {
         <h2 className="font-semibold text-sm">This week</h2>
         {streak > 1 && (
           <span className="text-[11px] font-semibold text-orange-300">
-            🔥 {streak}-week streak
+            {streak}-week streak
           </span>
         )}
       </div>

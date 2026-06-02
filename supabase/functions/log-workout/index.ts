@@ -37,6 +37,7 @@ CORE RULES
 - Exercise skipped → output default_sets entries, each with skipped:true, weight_kg:null, reps:null, is_deviation:true.
 - New exercise the user added (not in program) → include it, every set is_deviation:true.
 - Always include every program exercise (default or actual).
+- Do not include warmup sets. The app adds warmups automatically before saving.
 
 EXERCISE NAMING (CRITICAL)
 - For program exercises, use the exact name from the base program.
@@ -96,6 +97,7 @@ type ProgramRow = {
   is_bodyweight_base: boolean | null;
   per_set_weights: number[] | null;
   to_failure: boolean | null;
+  warmup_enabled: boolean | null;
 };
 
 type SetInsert = {
@@ -105,7 +107,15 @@ type SetInsert = {
   reps: number | null;
   set_number: number;
   skipped: boolean;
+  is_warmup: boolean;
   is_deviation: boolean;
+};
+
+type ParsedSetLike = {
+  weight_kg: number | null;
+  reps: number | null;
+  skipped?: boolean;
+  is_deviation?: boolean;
 };
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -141,6 +151,82 @@ function formatProgramLine(p: ProgramRow): string {
       p.default_weight_kg === null ? "bodyweight" : `${p.default_weight_kg}kg`;
   }
   return `- ${p.exercise_name}: ${sets} sets × ${repsUnit} @ ${weightPart}`;
+}
+
+function roundToPlate(value: number): number {
+  return Math.max(0, Math.round(value / 2.5) * 2.5);
+}
+
+function shouldWarmUpExercise(name: string, maxWeight: number, program?: ProgramRow): boolean {
+  if (program?.warmup_enabled === false) return false;
+  if (/plank|hold/.test(name)) return false;
+  if (program?.to_failure) return false;
+  if (program?.is_bodyweight_base && maxWeight > 0) return true;
+  if (maxWeight < 20) return false;
+
+  const skip =
+    /(curl|extension|raise|fly|flies|face_pull|abductor|adductor|calf|crunch|twist)/.test(name);
+  if (skip && maxWeight < 80) return false;
+
+  return /(squat|deadlift|press|row|pull|pulldown|dip|thrust|bench)/.test(name) || maxWeight >= 80;
+}
+
+function buildWarmupSets(
+  exerciseName: string,
+  workingSets: ParsedSetLike[],
+  program?: ProgramRow,
+): ParsedSetLike[] {
+  const active = workingSets.filter(
+    (s) => !s.skipped && (s.weight_kg ?? 0) > 0 && (s.reps ?? 0) > 0,
+  );
+  if (active.length === 0) return [];
+
+  const maxWeight = Math.max(...active.map((s) => s.weight_kg ?? 0));
+  if (!shouldWarmUpExercise(exerciseName, maxWeight, program)) return [];
+
+  if (program?.is_bodyweight_base) {
+    const rows: ParsedSetLike[] = [
+      { weight_kg: 0, reps: 5, skipped: false, is_deviation: false },
+    ];
+    if (maxWeight >= 15) {
+      rows.push({
+        weight_kg: roundToPlate(maxWeight * 0.5),
+        reps: 3,
+        skipped: false,
+        is_deviation: false,
+      });
+    }
+    return rows.filter((s) => (s.weight_kg ?? 0) < maxWeight);
+  }
+
+  const steps =
+    maxWeight >= 80
+      ? [
+          { pct: 0.5, reps: 8 },
+          { pct: 0.7, reps: 5 },
+          { pct: 0.85, reps: 3 },
+        ]
+      : maxWeight >= 40
+        ? [
+            { pct: 0.5, reps: 8 },
+            { pct: 0.75, reps: 5 },
+          ]
+        : [{ pct: 0.5, reps: 8 }];
+
+  const seen = new Set<number>();
+  return steps
+    .map((s) => ({
+      weight_kg: roundToPlate(maxWeight * s.pct),
+      reps: s.reps,
+      skipped: false,
+      is_deviation: false,
+    }))
+    .filter((s) => {
+      const weight = s.weight_kg ?? 0;
+      if (weight <= 0 || weight >= maxWeight || seen.has(weight)) return false;
+      seen.add(weight);
+      return true;
+    });
 }
 
 /** Muscles that "belong" to each workout type — used to filter the library
@@ -191,6 +277,7 @@ async function findPRs(
     .select("exercise_name, weight_kg")
     .in("exercise_name", names)
     .in("workout_id", ids)
+    .eq("is_warmup", false)
     .eq("skipped", false)
     .not("weight_kg", "is", null);
   const priorMax: Record<string, number> = {};
@@ -240,7 +327,7 @@ async function fetchProgram(
   const { data, error } = await supabase
     .from("program")
     .select(
-      "exercise_name, default_weight_kg, default_sets, default_reps, display_order, is_bodyweight_base, per_set_weights, to_failure",
+      "exercise_name, default_weight_kg, default_sets, default_reps, display_order, is_bodyweight_base, per_set_weights, to_failure, warmup_enabled",
     )
     .eq("workout_type", type)
     .order("display_order", { ascending: true });
@@ -276,14 +363,36 @@ async function logFromDefaults(
   const rows: SetInsert[] = [];
   for (const p of programRows) {
     const sets = p.default_sets ?? 3;
-    for (let i = 0; i < sets; i++) {
+    const workingSets: ParsedSetLike[] = Array.from({ length: sets }, (_, i) => ({
+      weight_kg: p.per_set_weights?.[i] ?? p.default_weight_kg,
+      reps: p.default_reps,
+      skipped: false,
+      is_deviation: false,
+    }));
+    const warmups = buildWarmupSets(p.exercise_name, workingSets, p);
+    warmups.forEach((s, i) => {
       rows.push({
         workout_id: workout.id,
         exercise_name: p.exercise_name,
-        weight_kg: p.default_weight_kg,
-        reps: p.default_reps,
+        weight_kg: s.weight_kg,
+        reps: s.reps,
         set_number: i + 1,
         skipped: false,
+        is_warmup: true,
+        is_deviation: false,
+      });
+    });
+
+    for (let i = 0; i < sets; i++) {
+      const s = workingSets[i];
+      rows.push({
+        workout_id: workout.id,
+        exercise_name: p.exercise_name,
+        weight_kg: s.weight_kg,
+        reps: s.reps,
+        set_number: i + 1,
+        skipped: false,
+        is_warmup: false,
         is_deviation: false,
       });
     }
@@ -313,6 +422,7 @@ async function fetchLastSessionSummary(
     .from("sets")
     .select("exercise_name, weight_kg, reps, set_number, skipped")
     .eq("workout_id", lastWorkout.id)
+    .eq("is_warmup", false)
     .order("exercise_name", { ascending: true })
     .order("set_number", { ascending: true });
 
@@ -480,6 +590,20 @@ ${userMessage}`;
       const finalName = ex.exercise_name;
       const sets = Array.isArray(ex.sets) ? ex.sets : null;
       if (sets && sets.length > 0) {
+        const prog = programByName.get(ex.exercise_name);
+        const warmups = buildWarmupSets(finalName, sets, prog);
+        warmups.forEach((s, i) => {
+          rows.push({
+            workout_id: workout.id,
+            exercise_name: finalName,
+            weight_kg: s.weight_kg,
+            reps: s.reps,
+            set_number: i + 1,
+            skipped: false,
+            is_warmup: true,
+            is_deviation: false,
+          });
+        });
         sets.forEach((s, i) => {
           rows.push({
             workout_id: workout.id,
@@ -488,6 +612,7 @@ ${userMessage}`;
             reps: s.skipped ? null : (s.reps ?? null),
             set_number: i + 1,
             skipped: !!s.skipped,
+            is_warmup: false,
             is_deviation: !!s.is_deviation,
           });
         });
@@ -495,14 +620,35 @@ ${userMessage}`;
         const prog = programByName.get(ex.exercise_name);
         const defSets = prog?.default_sets ?? 3;
         const defReps = prog?.default_reps ?? null;
-        for (let i = 0; i < defSets; i++) {
+        const workingSets: ParsedSetLike[] = Array.from({ length: defSets }, (_, i) => ({
+          weight_kg: ex.skipped ? null : (ex.weight_kg ?? prog?.per_set_weights?.[i] ?? prog?.default_weight_kg ?? null),
+          reps: ex.skipped ? null : defReps,
+          skipped: !!ex.skipped,
+          is_deviation: !!ex.is_deviation,
+        }));
+        const warmups = buildWarmupSets(finalName, workingSets, prog);
+        warmups.forEach((s, i) => {
           rows.push({
             workout_id: workout.id,
             exercise_name: finalName,
-            weight_kg: ex.skipped ? null : (ex.weight_kg ?? null),
-            reps: ex.skipped ? null : defReps,
+            weight_kg: s.weight_kg,
+            reps: s.reps,
+            set_number: i + 1,
+            skipped: false,
+            is_warmup: true,
+            is_deviation: false,
+          });
+        });
+        for (let i = 0; i < defSets; i++) {
+          const s = workingSets[i];
+          rows.push({
+            workout_id: workout.id,
+            exercise_name: finalName,
+            weight_kg: s.weight_kg,
+            reps: s.reps,
             set_number: i + 1,
             skipped: !!ex.skipped,
+            is_warmup: false,
             is_deviation: !!ex.is_deviation,
           });
         }

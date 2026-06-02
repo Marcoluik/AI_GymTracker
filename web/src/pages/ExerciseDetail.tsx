@@ -10,6 +10,7 @@ type SetRow = {
   weight_kg: number | null;
   reps: number | null;
   skipped: boolean;
+  is_warmup?: boolean;
   workout_id: string;
 };
 
@@ -25,19 +26,13 @@ type Session = {
   workout_type: string;
   sets: { weight: number; reps: number }[];
   maxWeight: number;
-  bestE1RM: number;
+  repsAtMax: number;
   volume: number;
 };
 
-// Epley formula: w × (1 + r/30). Standard estimated 1-rep max.
-function e1rm(weight: number, reps: number): number {
-  if (reps <= 0 || weight <= 0) return 0;
-  if (reps === 1) return weight;
-  return weight * (1 + reps / 30);
-}
-
 function labelize(name: string) {
-  const s = name.replace(/_/g, " ");
+  const clean = name.replace(/_custom_\d+$/, "");
+  const s = clean.replace(/_+/g, " ").replace(/\s+/g, " ").trim();
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
@@ -72,7 +67,6 @@ export default function ExerciseDetail() {
   const [bodyWeights, setBodyWeights] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [libraryMatch, setLibraryMatch] = useState<{ name: string; primary_muscles: string[]; images: string[] | null } | null>(null);
-  const [chartMode, setChartMode] = useState<"max" | "e1rm">("max");
 
   useEffect(() => {
     if (!exerciseName) return;
@@ -81,7 +75,7 @@ export default function ExerciseDetail() {
       const [{ data: setRows }, { data: libRow }, { data: bwRows }, { data: progRow }] = await Promise.all([
         supabase
           .from("sets")
-          .select("weight_kg, reps, skipped, workout_id")
+          .select("*")
           .eq("exercise_name", exerciseName),
         supabase
           .from("exercise_library")
@@ -134,7 +128,7 @@ export default function ExerciseDetail() {
       // Group sets by workout
       const byWorkout = new Map<string, SetRow[]>();
       for (const s of sets) {
-        if (s.skipped) continue;
+        if (s.skipped || s.is_warmup) continue;
         const list = byWorkout.get(s.workout_id) ?? [];
         list.push(s);
         byWorkout.set(s.workout_id, list);
@@ -149,7 +143,7 @@ export default function ExerciseDetail() {
           .map((r) => ({ weight: r.weight_kg!, reps: r.reps! }));
         if (clean.length === 0) continue;
         const maxWeight = Math.max(...clean.map((s) => s.weight));
-        const bestE1RM = Math.max(...clean.map((s) => e1rm(s.weight, s.reps)));
+        const repsAtMax = Math.max(...clean.filter((s) => s.weight === maxWeight).map((s) => s.reps));
         const volume = clean.reduce((sum, s) => sum + s.weight * s.reps, 0);
         built.push({
           workout_id,
@@ -157,7 +151,7 @@ export default function ExerciseDetail() {
           workout_type: w.workout_type,
           sets: clean,
           maxWeight,
-          bestE1RM,
+          repsAtMax,
           volume,
         });
       }
@@ -171,20 +165,20 @@ export default function ExerciseDetail() {
   const stats = useMemo(() => {
     if (sessions.length === 0) return null;
     const maxWeight = Math.max(...sessions.map((s) => s.maxWeight));
-    const maxE1RM = Math.max(...sessions.map((s) => s.bestE1RM));
+    const repsAtMax = Math.max(...sessions.filter((s) => s.maxWeight === maxWeight).map((s) => s.repsAtMax));
     const totalVolume = sessions.reduce((sum, s) => sum + s.volume, 0);
-    return { maxWeight, maxE1RM, totalVolume, sessions: sessions.length };
+    return { maxWeight, repsAtMax, totalVolume, sessions: sessions.length };
   }, [sessions]);
 
-  // Stalling detection: have any of the last N sessions hit a new e1RM PR?
+  // Stalling detection: have any of the last N sessions hit a new max-weight PR?
   const stalling = useMemo(() => {
     if (sessions.length < 6) return null;
     const N = 5;
     const recent = sessions.slice(-N);
     const before = sessions.slice(0, -N);
     if (before.length === 0) return null;
-    const priorMax = Math.max(...before.map((s) => s.bestE1RM));
-    const recentMax = Math.max(...recent.map((s) => s.bestE1RM));
+    const priorMax = Math.max(...before.map((s) => s.maxWeight));
+    const recentMax = Math.max(...recent.map((s) => s.maxWeight));
     return recentMax <= priorMax;
   }, [sessions]);
 
@@ -245,7 +239,7 @@ export default function ExerciseDetail() {
           {/* All-time stats */}
           <div className="grid grid-cols-2 gap-2">
             <StatTile label="Max weight" value={`${stats.maxWeight} kg`} />
-            <StatTile label="Best 1RM (est.)" value={`${Math.round(stats.maxE1RM)} kg`} />
+            <StatTile label="Reps at max" value={`${stats.repsAtMax}`} />
             <StatTile label="Total volume" value={`${Math.round(stats.totalVolume).toLocaleString()} kg`} />
             <StatTile label="Sessions" value={`${stats.sessions}`} />
           </div>
@@ -257,36 +251,25 @@ export default function ExerciseDetail() {
                 : "border-emerald-500/30 bg-emerald-500/5 text-emerald-300"
             }`}>
               {stalling
-                ? `Stalled — no new 1RM in the last ${Math.min(5, sessions.length)} sessions`
-                : "Progressing — new 1RM within the last 5 sessions"}
+                ? `Stalled - no new max weight in the last ${Math.min(5, sessions.length)} sessions`
+                : "Progressing - new max weight within the last 5 sessions"}
             </div>
           )}
 
-          {/* Strength chart — max weight by default, toggle for est. 1RM */}
+          {/* Strength chart */}
           {sessions.length >= 2 && (
             <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-4">
               <div className="flex items-center justify-between mb-3">
                 <div>
-                  <h2 className="font-semibold text-sm">
-                    {chartMode === "max" ? "Max weight per session" : "Est. 1-rep max"}
-                  </h2>
+                  <h2 className="font-semibold text-sm">Max weight per session</h2>
                   <p className="text-[10px] text-neutral-500 mt-0.5">
-                    {chartMode === "max"
-                      ? "heaviest set that session"
-                      : "weight × (1 + reps/30)"}
+                    heaviest set that session
                   </p>
                 </div>
-                <button
-                  onClick={() => setChartMode((m) => (m === "max" ? "e1rm" : "max"))}
-                  className="text-[10px] uppercase tracking-wider font-semibold px-2 py-1 rounded bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
-                >
-                  {chartMode === "max" ? "Show 1RM" : "Show max"}
-                </button>
               </div>
               <StrengthChart
                 sessions={sessions.slice(-20)}
                 bodyWeights={bodyWeights}
-                mode={chartMode}
               />
             </div>
           )}
@@ -331,7 +314,7 @@ export default function ExerciseDetail() {
                   <div className="min-w-0 flex-1">
                     <div className="text-sm">{formatDate(s.date)}</div>
                     <div className="text-[11px] text-neutral-500 truncate">
-                      {s.sets.length} {s.sets.length === 1 ? "set" : "sets"} · max {s.maxWeight} kg · 1RM ~{Math.round(s.bestE1RM)} kg
+                      {s.sets.length} {s.sets.length === 1 ? "set" : "sets"} · best {s.maxWeight} kg × {s.repsAtMax}
                     </div>
                   </div>
                 </Link>
@@ -356,18 +339,16 @@ function StatTile({ label, value }: { label: string; value: string }) {
 function StrengthChart({
   sessions,
   bodyWeights,
-  mode,
 }: {
   sessions: Session[];
   bodyWeights: Map<string, number>;
-  mode: "max" | "e1rm";
 }) {
   const w = 340, h = 160;
   const leftPad = 32, rightPad = 32, topPad = 12, bottomPad = 22;
   const innerW = w - leftPad - rightPad;
   const innerH = h - topPad - bottomPad;
 
-  const values = sessions.map((s) => (mode === "max" ? s.maxWeight : s.bestE1RM));
+  const values = sessions.map((s) => s.maxWeight);
   const rawMin = Math.min(...values);
   const rawMax = Math.max(...values);
   // Pad the scale slightly so points don't sit on the edges
@@ -384,7 +365,7 @@ function StrengthChart({
   }
 
   const points = sessions.map((s, i) => {
-    const v = mode === "max" ? s.maxWeight : s.bestE1RM;
+    const v = s.maxWeight;
     const x = leftPad + (i / Math.max(sessions.length - 1, 1)) * innerW;
     const y = topPad + (1 - (v - yMin) / range) * innerH;
     return { x, y, value: v };
