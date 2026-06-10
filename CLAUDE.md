@@ -6,7 +6,7 @@ Single-user personal gym tracker. Marco logs workouts via iOS Shortcut → Supab
 ## Stack (fixed — do not introduce other services)
 - **Supabase** (`zyqfxdewrjrewgcpxcxt`): Postgres + Auth (magic-link) + Edge Functions (Deno/TS)
 - **Anthropic**: `claude-sonnet-4-20250514` — do NOT upgrade model without asking
-- **GitHub**: `MK-personlig/AI_GymTracker`
+- **GitHub**: `Marcoluik/AI_GymTracker`
 - **Netlify**: site `mkgymai` → `https://mkgymai.netlify.app` — auto-deploys on push
 - **Frontend**: Vite + React + TypeScript + Tailwind + Recharts (in `/web`)
 
@@ -68,7 +68,7 @@ For database migrations: `supabase db push` (same `SUPABASE_ACCESS_TOKEN`; proje
 ## Pushing to GitHub
 Marco's local git is on a different GitHub account. The remote uses a PAT embedded in the URL:
 ```
-git remote set-url origin https://TOKEN@github.com/MK-personlig/AI_GymTracker.git
+git remote set-url origin https://TOKEN@github.com/Marcoluik/AI_GymTracker.git
 ```
 (Token is stored in Marco's 1Password / keychain — ask him if needed.)
 
