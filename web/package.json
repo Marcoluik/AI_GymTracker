@@ -14,8 +14,7 @@
     "react": "^18.3.1",
     "react-body-highlighter": "^2.0.5",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.26.0",
-    "recharts": "^2.12.7"
+    "react-router-dom": "^6.26.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",

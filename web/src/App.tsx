@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import {
   Routes,
   Route,
@@ -13,11 +13,15 @@ import { supabase, ALLOWED_EMAIL } from "./lib/supabase";
 import Login from "./pages/Login";
 import ResetPassword from "./pages/ResetPassword";
 import Program from "./pages/Program";
-import Workouts from "./pages/Workouts";
-import WorkoutDetail from "./pages/WorkoutDetail";
-import ExerciseDetail from "./pages/ExerciseDetail";
-import Trends from "./pages/Trends";
-import Library from "./pages/Library";
+
+// Lazy-load everything except the start page — Trends and WorkoutDetail pull
+// in the chart/body-diagram libraries, which are most of the bundle. This way
+// the app shell and Program render without waiting for them.
+const Workouts = lazy(() => import("./pages/Workouts"));
+const WorkoutDetail = lazy(() => import("./pages/WorkoutDetail"));
+const ExerciseDetail = lazy(() => import("./pages/ExerciseDetail"));
+const Trends = lazy(() => import("./pages/Trends"));
+const Library = lazy(() => import("./pages/Library"));
 import {
   ListIcon,
   CalendarIcon,
@@ -83,12 +87,30 @@ function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const mainRef = useRef<HTMLElement>(null);
+  const hiddenAt = useRef<number | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   // The scroll container is shared across pages — without this, opening a
   // detail page from a scrolled list starts it mid-page.
   useEffect(() => {
     mainRef.current?.scrollTo(0, 0);
   }, [location.pathname]);
+
+  // A home-screen app has no reload button, so data goes stale when the app
+  // sits in the background (e.g. a workout logged via the Shortcut won't
+  // appear). Remount the current page when returning after 5+ minutes away.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        hiddenAt.current = Date.now();
+      } else if (hiddenAt.current && Date.now() - hiddenAt.current > 5 * 60_000) {
+        hiddenAt.current = null;
+        setRefreshKey((k) => k + 1);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
 
   const signOut = async () => {
     await supabase.auth.signOut();
@@ -113,7 +135,9 @@ function Layout() {
         ref={mainRef}
         className="flex-1 overflow-y-auto overscroll-contain px-4 pt-4 pb-4"
       >
-        <Outlet />
+        <Suspense key={refreshKey} fallback={null}>
+          <Outlet />
+        </Suspense>
       </main>
       <nav
         aria-label="Primary"
