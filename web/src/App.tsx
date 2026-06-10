@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import {
   Routes,
   Route,
@@ -74,12 +75,21 @@ function pageTitle(pathname: string): string {
   if (pathname.startsWith("/workouts")) return "Workouts";
   if (pathname.startsWith("/trends")) return "Progress";
   if (pathname.startsWith("/library")) return "Exercise Library";
+  if (pathname.startsWith("/exercise")) return "Exercise";
   return "Program";
 }
 
 function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
+  const mainRef = useRef<HTMLElement>(null);
+
+  // The scroll container is shared across pages — without this, opening a
+  // detail page from a scrolled list starts it mid-page.
+  useEffect(() => {
+    mainRef.current?.scrollTo(0, 0);
+  }, [location.pathname]);
+
   const signOut = async () => {
     await supabase.auth.signOut();
     navigate("/");
@@ -99,7 +109,10 @@ function Layout() {
           <LogOutIcon className="w-5 h-5" />
         </button>
       </header>
-      <main className="flex-1 overflow-y-auto overscroll-contain px-4 pt-4 pb-4">
+      <main
+        ref={mainRef}
+        className="flex-1 overflow-y-auto overscroll-contain px-4 pt-4 pb-4"
+      >
         <Outlet />
       </main>
       <nav
