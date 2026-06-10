@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import Model, { type Muscle } from "react-body-highlighter";
 import { supabase } from "../lib/supabase";
-import { ChevronLeftIcon, ChevronDownIcon, PlusIcon } from "../components/icons";
+import { ChevronLeftIcon, ChevronDownIcon, PlusIcon, CalendarIcon } from "../components/icons";
 import { isTimedExerciseName } from "../data/exerciseCatalog";
 
 type Workout = {
@@ -11,6 +11,7 @@ type Workout = {
   workout_type: string;
   notes: string | null;
   raw_message: string | null;
+  session_id: string | null;
 };
 type SetRow = {
   id: string;
@@ -164,7 +165,6 @@ export default function WorkoutDetail() {
 
   const [editing, setEditing] = useState(false);
   const [editedNotes, setEditedNotes] = useState("");
-  const [editedDate, setEditedDate] = useState("");
   const [editedSets, setEditedSets] = useState<Record<string, EditedSet>>({});
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -340,9 +340,23 @@ export default function WorkoutDetail() {
     })();
   }, [sets]);
 
+  // Changing the date also moves any workout logged in the same session
+  // (e.g. the abs day attached to a chest day) so the pair stays together.
+  async function changeDate(newDate: string) {
+    if (!workout || !/^\d{4}-\d{2}-\d{2}$/.test(newDate) || newDate === workout.date) return;
+    const query = workout.session_id
+      ? supabase.from("workouts").update({ date: newDate }).eq("session_id", workout.session_id)
+      : supabase.from("workouts").update({ date: newDate }).eq("id", workout.id);
+    const { error } = await query;
+    if (error) {
+      alert(`Couldn't change date: ${error.message}`);
+      return;
+    }
+    setWorkout({ ...workout, date: newDate });
+  }
+
   function startEditing() {
     setEditedNotes(workout?.notes ?? "");
-    setEditedDate(workout?.date ?? "");
     const map: Record<string, EditedSet> = {};
     for (const s of sets) {
       map[s.id] = {
@@ -365,13 +379,9 @@ export default function WorkoutDetail() {
     if (!workout) return;
     setSaving(true);
     try {
-      const datePatch =
-        /^\d{4}-\d{2}-\d{2}$/.test(editedDate) && editedDate !== workout.date
-          ? { date: editedDate }
-          : {};
       const { error: wErr } = await supabase
         .from("workouts")
-        .update({ notes: editedNotes.trim() || null, ...datePatch })
+        .update({ notes: editedNotes.trim() || null })
         .eq("id", workout.id);
       if (wErr) { alert(`Couldn't save workout: ${wErr.message}`); return; }
 
@@ -658,9 +668,22 @@ export default function WorkoutDetail() {
         >
           {workout.workout_type}
         </span>
-        <h2 className="text-xl font-semibold mt-2">
-          {formatFullDate(workout.date)}
-        </h2>
+        <label className="relative mt-2 flex w-fit cursor-pointer items-center gap-2">
+          <h2 className="text-xl font-semibold">{formatFullDate(workout.date)}</h2>
+          <CalendarIcon className="w-4 h-4 text-neutral-500" />
+          <input
+            type="date"
+            value={workout.date}
+            onChange={(e) => changeDate(e.target.value)}
+            aria-label="Change workout date"
+            className="absolute inset-0 h-full w-full opacity-0"
+          />
+        </label>
+        {workout.session_id && (
+          <p className="text-[11px] text-neutral-500 mt-1">
+            Changing the date also moves the attached abs workout.
+          </p>
+        )}
       </header>
 
       {(workingSets.length > 0 || adjustedExerciseCount > 0 || skippedCount > 0) && (
@@ -689,17 +712,6 @@ export default function WorkoutDetail() {
 
       {editing ? (
         <div className="space-y-2">
-          <div className="p-3 rounded-xl bg-neutral-900 border border-neutral-800">
-            <p className="text-[11px] uppercase tracking-wider font-semibold text-neutral-500 mb-1">
-              Date
-            </p>
-            <input
-              type="date"
-              value={editedDate}
-              onChange={(e) => setEditedDate(e.target.value)}
-              className="w-full bg-transparent text-sm text-neutral-100 outline-none"
-            />
-          </div>
           <div className="p-3 rounded-xl bg-neutral-900 border border-neutral-800">
             <p className="text-[11px] uppercase tracking-wider font-semibold text-neutral-500 mb-1">
               Notes

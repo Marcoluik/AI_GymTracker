@@ -255,9 +255,6 @@ export default function Program() {
 
   return (
     <div className="space-y-6 pb-4">
-      <p className="text-sm text-neutral-400 px-1">
-        Tap an exercise to edit. Use + and - to change targets fast.
-      </p>
       {TYPES.map((type) => {
         const typeRows = rows
           .filter((r) => r.workout_type === type)

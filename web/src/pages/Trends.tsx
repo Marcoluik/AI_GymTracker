@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import Model, { type Muscle } from "react-body-highlighter";
 import { supabase } from "../lib/supabase";
-import { PlusIcon, TrashIcon, XIcon } from "../components/icons";
+import { PlusIcon, TrashIcon, XIcon, ChevronDownIcon } from "../components/icons";
 
 // ── Muscle recovery ────────────────────────────────────────────────────────────
 const WORKOUT_MUSCLES: Record<string, string[]> = {
@@ -71,48 +71,241 @@ function buildModelData(recovery: Record<string, number>) {
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 export default function Trends() {
-  const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  return (
+    <div className="pb-4 space-y-3">
+      <WeeklySummary />
+      <ProgramSuggestions />
+      <Section title="Strength records" subtitle="Recent PRs, most improved, best weights">
+        <RecentWeightPRs />
+        <MostImproved />
+        <PRDashboard />
+      </Section>
+      <Section title="Training volume" subtitle="Total kg lifted per week">
+        <WeeklyVolume />
+      </Section>
+      <Section title="Running" subtitle="Distance, pace, weekly totals">
+        <RunAnalytics />
+      </Section>
+      <Section title="Muscle recovery" subtitle="What's ready to train">
+        <MuscleRecovery />
+      </Section>
+      <Section title="Body weight" subtitle="Log and track your weight">
+        <BodyWeight />
+      </Section>
+      <Section title="Progress photos" subtitle="Visual check-ins">
+        <ProgressPhotos />
+      </Section>
+    </div>
+  );
+}
+
+// Collapsible section — content only loads when opened, so the page stays
+// short and fast.
+function Section({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between gap-3 rounded-2xl border border-neutral-800 bg-neutral-900 px-4 py-3.5 text-left hover:bg-neutral-800/40 active:bg-neutral-800/60 transition-colors"
+      >
+        <div className="min-w-0">
+          <span className="font-semibold text-sm">{title}</span>
+          {subtitle && <p className="text-[11px] text-neutral-500 mt-0.5">{subtitle}</p>}
+        </div>
+        <ChevronDownIcon
+          className={`w-4 h-4 text-neutral-600 shrink-0 transition-transform ${
+            open ? "rotate-180" : ""
+          }`}
+        />
+      </button>
+      {open && <div className="mt-3 space-y-3">{children}</div>}
+    </div>
+  );
+}
+
+// ── Program suggestions ───────────────────────────────────────────────────────
+// Compares the weights actually lifted in the last two sessions of each
+// exercise against the program target — if they consistently differ (up or
+// down), offers a one-tap program update.
+
+type Suggestion = {
+  programId: number;
+  exercise: string;
+  current: string | null;
+  toKg: number;
+};
+
+const DISMISSED_KEY = "programSuggestionsDismissed";
+
+function loadDismissed(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? "[]");
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+function suggestionKey(s: Suggestion): string {
+  return `${s.programId}:${s.toKg}`;
+}
+
+// The weight that best represents a session: the most common working-set
+// weight; ties go to the heavier one.
+function dominantWeight(weights: number[]): number | null {
+  if (weights.length === 0) return null;
+  const counts = new Map<number, number>();
+  for (const w of weights) counts.set(w, (counts.get(w) ?? 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+}
+
+function ProgramSuggestions() {
+  const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
+  const [dismissed, setDismissed] = useState<string[]>(loadDismissed);
+  const [busy, setBusy] = useState<number | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
     (async () => {
-      const since = new Date(Date.now() - 14 * 86_400_000).toISOString().slice(0, 10);
-      const { data, error } = await supabase
-        .from("workouts")
-        .select("date, workout_type")
-        .gte("date", since)
-        .order("date", { ascending: false });
-      if (cancelled) return;
-      if (error) setError(error.message);
-      else setWorkouts((data as WorkoutRow[]) ?? []);
-      setLoading(false);
+      const { data: prog } = await supabase
+        .from("program")
+        .select("id, exercise_name, workout_type, default_weight_kg, per_set_weights");
+      const programRows = ((prog ?? []) as {
+        id: number;
+        exercise_name: string;
+        workout_type: string;
+        default_weight_kg: number | null;
+        per_set_weights: number[] | null;
+      }[]).filter((p) => p.workout_type !== "run");
+      if (programRows.length === 0) { setSuggestions([]); return; }
+
+      const since = new Date(Date.now() - 120 * 86_400_000).toISOString().slice(0, 10);
+      const { data: sets } = await supabase
+        .from("sets")
+        .select("exercise_name, weight_kg, skipped, is_warmup, workouts!inner(date)")
+        .in("exercise_name", programRows.map((p) => p.exercise_name))
+        .eq("skipped", false)
+        .not("weight_kg", "is", null)
+        .gte("workouts.date", since);
+
+      // exercise → date → working-set weights that day
+      const byExercise = new Map<string, Map<string, number[]>>();
+      for (const r of (sets ?? []) as {
+        exercise_name: string;
+        weight_kg: number;
+        is_warmup?: boolean;
+        workouts: { date: string } | { date: string }[];
+      }[]) {
+        if (r.is_warmup) continue;
+        const date = Array.isArray(r.workouts) ? r.workouts[0]?.date : r.workouts?.date;
+        if (!date) continue;
+        const byDate = byExercise.get(r.exercise_name) ?? new Map<string, number[]>();
+        const list = byDate.get(date) ?? [];
+        list.push(r.weight_kg);
+        byDate.set(date, list);
+        byExercise.set(r.exercise_name, byDate);
+      }
+
+      const out: Suggestion[] = [];
+      for (const p of programRows) {
+        const byDate = byExercise.get(p.exercise_name);
+        if (!byDate) continue;
+        const lastTwo = [...byDate.keys()].sort().slice(-2);
+        if (lastTwo.length < 2) continue;
+        const [a, b] = lastTwo.map((d) => dominantWeight(byDate.get(d)!));
+        if (a === null || a !== b || a <= 0) continue;
+
+        const targets =
+          p.per_set_weights && p.per_set_weights.length > 0
+            ? p.per_set_weights
+            : p.default_weight_kg !== null
+              ? [p.default_weight_kg]
+              : [];
+        if (targets.length > 0 && targets.every((w) => w === a)) continue;
+
+        out.push({
+          programId: p.id,
+          exercise: p.exercise_name,
+          current:
+            targets.length > 0 ? [...new Set(targets)].map(formatKg).join(" / ") : null,
+          toKg: a,
+        });
+      }
+      setSuggestions(out.slice(0, 6));
     })();
-    return () => { cancelled = true; };
   }, []);
 
-  const recovery = calcRecovery(workouts);
-
-  if (error) {
-    return (
-      <div className="rounded-2xl border border-red-900/40 bg-red-950/20 p-4 text-sm text-red-300">
-        Couldn't load recovery data: {error}
-      </div>
-    );
+  async function apply(s: Suggestion) {
+    setBusy(s.programId);
+    const { error } = await supabase
+      .from("program")
+      .update({ default_weight_kg: s.toKg, per_set_weights: null })
+      .eq("id", s.programId);
+    setBusy(null);
+    if (error) { alert(error.message); return; }
+    setSuggestions((prev) => prev?.filter((x) => x.programId !== s.programId) ?? null);
   }
 
+  function dismiss(s: Suggestion) {
+    const next = [...dismissed, suggestionKey(s)].slice(-50);
+    setDismissed(next);
+    localStorage.setItem(DISMISSED_KEY, JSON.stringify(next));
+  }
+
+  const visible = (suggestions ?? []).filter((s) => !dismissed.includes(suggestionKey(s)));
+  if (visible.length === 0) return null;
+
   return (
-    <div className="pb-4 space-y-4">
-      <WeeklySummary />
-      <RecentWeightPRs />
-      <MostImproved />
-      <PRDashboard />
-      <WeeklyVolume />
-      <RunAnalytics />
-      <MuscleRecovery recovery={recovery} loading={loading} />
-      <BodyWeight />
-      <ProgressPhotos />
+    <div className="rounded-2xl border border-neutral-800 bg-neutral-900 overflow-hidden">
+      <div className="px-4 pt-4 pb-3 border-b border-neutral-800">
+        <h2 className="font-semibold text-sm">Update your program?</h2>
+        <p className="text-[11px] text-neutral-500 mt-0.5">
+          based on what you actually lifted in your last two sessions
+        </p>
+      </div>
+      <div>
+        {visible.map((s, i) => (
+          <div
+            key={suggestionKey(s)}
+            className={`flex items-center gap-3 px-4 py-3 ${
+              i < visible.length - 1 ? "border-b border-neutral-800" : ""
+            }`}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="text-sm truncate">{labelizeName(s.exercise)}</div>
+              <div className="text-[11px] text-neutral-500 mt-0.5">
+                lifted {formatKg(s.toKg)} kg both times
+                {s.current ? ` · program says ${s.current} kg` : " · no program weight set"}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => apply(s)}
+              disabled={busy === s.programId}
+              className="shrink-0 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-black disabled:opacity-40"
+            >
+              {busy === s.programId ? "…" : `Set ${formatKg(s.toKg)} kg`}
+            </button>
+            <button
+              type="button"
+              onClick={() => dismiss(s)}
+              aria-label="Dismiss suggestion"
+              className="shrink-0 p-1.5 text-neutral-600 hover:text-neutral-300"
+            >
+              <XIcon className="w-4 h-4" />
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -524,7 +717,10 @@ function RunAnalytics() {
   }, []);
 
   if (!data) return null;
-  if (data.totalRuns === 0) return null;
+  if (data.totalRuns === 0)
+    return (
+      <p className="text-sm text-neutral-500 px-1 py-2 text-center">No runs logged yet.</p>
+    );
 
   const maxWeek = Math.max(...data.weeks.map((w) => w.distance), 1);
 
@@ -974,14 +1170,28 @@ function Sparkline({ rows }: { rows: BodyWeightRow[] }) {
 }
 
 // ── Muscle recovery card ──────────────────────────────────────────────────────
-function MuscleRecovery({
-  recovery,
-  loading,
-}: {
-  recovery: Record<string, number>;
-  loading: boolean;
-}) {
+function MuscleRecovery() {
   const [view, setView] = useState<"anterior" | "posterior">("anterior");
+  const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const since = new Date(Date.now() - 14 * 86_400_000).toISOString().slice(0, 10);
+      const { data } = await supabase
+        .from("workouts")
+        .select("date, workout_type")
+        .gte("date", since)
+        .order("date", { ascending: false });
+      if (cancelled) return;
+      setWorkouts((data as WorkoutRow[]) ?? []);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const recovery = calcRecovery(workouts);
   const modelData = buildModelData(recovery);
 
   return (
