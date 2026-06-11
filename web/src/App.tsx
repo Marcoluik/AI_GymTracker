@@ -34,11 +34,7 @@ export default function App() {
   const { session, loading, email, recoveryMode, exitRecovery } = useAuth();
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full text-neutral-500 text-sm">
-        Loading…
-      </div>
-    );
+    return <PageLoader />;
   }
 
   // Password recovery: user came from a reset email — let them set a new password
@@ -135,8 +131,10 @@ function Layout() {
         ref={mainRef}
         className="flex-1 overflow-y-auto overscroll-contain px-4 pt-4 pb-4"
       >
-        <Suspense key={refreshKey} fallback={null}>
-          <Outlet />
+        <Suspense key={refreshKey} fallback={<PageLoader />}>
+          <div key={location.pathname} className="page-fade">
+            <Outlet />
+          </div>
         </Suspense>
       </main>
       <nav
@@ -171,11 +169,11 @@ function Tab({
       {({ isActive }) => (
         <>
           <span
-            className={
+            className={`transition-[color,transform] duration-200 ${
               isActive
-                ? "text-white"
+                ? "text-white scale-110"
                 : "text-neutral-500 group-hover:text-neutral-300"
-            }
+            }`}
           >
             {icon}
           </span>
@@ -189,6 +187,14 @@ function Tab({
         </>
       )}
     </NavLink>
+  );
+}
+
+function PageLoader() {
+  return (
+    <div className="flex items-center justify-center h-full py-16 delayed-show">
+      <div className="w-6 h-6 rounded-full border-2 border-neutral-700 border-t-neutral-300 animate-spin" />
+    </div>
   );
 }
 

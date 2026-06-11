@@ -954,7 +954,7 @@ function ExerciseBlock({
       </button>
 
       {expanded && (
-        <>
+        <div className="page-fade">
         {images && images.length > 0 && (
           <div className="flex gap-2 overflow-x-auto px-4 py-3 border-t border-neutral-800/70 scrollbar-none">
             {images.map((img, i) => (
@@ -1084,7 +1084,7 @@ function ExerciseBlock({
         >
           View full progress →
         </Link>
-        </>
+        </div>
       )}
     </div>
   );

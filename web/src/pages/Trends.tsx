@@ -128,7 +128,7 @@ function Section({
           }`}
         />
       </button>
-      {open && <div className="mt-3 space-y-3">{children}</div>}
+      {open && <div className="mt-3 space-y-3 page-fade">{children}</div>}
     </div>
   );
 }
@@ -1130,6 +1130,13 @@ function BodyWeight() {
           step="0.1"
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              (e.target as HTMLInputElement).blur();
+              save();
+            }
+          }}
+          enterKeyHint="done"
           placeholder="Log today's weight"
           className="flex-1 bg-neutral-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-600 placeholder-neutral-500"
         />

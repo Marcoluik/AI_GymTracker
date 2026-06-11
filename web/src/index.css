@@ -46,6 +46,49 @@ body {
   touch-action: pan-x pan-y;
 }
 
+/* UI chrome shouldn't behave like webpage text: no long-press selection or
+   iOS callout on buttons, links, and labels — makes taps feel native. */
+button,
+a,
+label,
+nav {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Subtle fade+rise when a page (or expanded section) appears */
+@keyframes page-fade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.page-fade {
+  animation: page-fade 0.22s ease-out;
+}
+
+/* Spinner that only becomes visible after a beat — fast loads show nothing */
+@keyframes delayed-show {
+  to {
+    opacity: 1;
+  }
+}
+.delayed-show {
+  opacity: 0;
+  animation: delayed-show 0.15s ease-out 0.15s forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-fade {
+    animation: none;
+  }
+}
+
 /* Inputs should never trigger zoom on iOS */
 input,
 textarea,

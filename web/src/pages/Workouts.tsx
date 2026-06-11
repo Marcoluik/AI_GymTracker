@@ -263,6 +263,10 @@ export default function Workouts() {
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         placeholder="Search workouts…"
+        enterKeyHint="search"
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        }}
         className="w-full bg-neutral-900 border border-neutral-800 rounded-xl pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:border-neutral-600 placeholder-neutral-600"
       />
     </div>
@@ -339,7 +343,7 @@ function SingleRow({ w, metric }: { w: Workout; metric?: WorkoutMetric }) {
   return (
     <Link
       to={`/workouts/${w.id}`}
-      className="flex items-center gap-3 px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-800 hover:border-neutral-700 active:bg-neutral-800 transition-colors"
+      className="flex items-center gap-3 px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-800 hover:border-neutral-700 active:bg-neutral-800 active:scale-[0.98] transition-[background-color,border-color,transform] duration-150"
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 mb-0.5">
@@ -375,7 +379,7 @@ function PairRow({
   const summary = metricText(main, aggregate);
 
   return (
-    <div className="rounded-xl border border-neutral-800 bg-neutral-900 overflow-hidden">
+    <div className="rounded-xl border border-neutral-800 bg-neutral-900 overflow-hidden active:scale-[0.98] transition-transform duration-150">
       <Link
         to={`/workouts/${main.id}`}
         className="flex items-center gap-3 px-4 py-3 hover:bg-neutral-800/50 active:bg-neutral-800 transition-colors"
