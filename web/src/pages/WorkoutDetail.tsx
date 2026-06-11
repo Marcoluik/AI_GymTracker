@@ -1093,39 +1093,57 @@ function ExerciseBlock({
 // ── Workout muscles map ───────────────────────────────────────────────────────
 
 function WorkoutMuscles({ workoutType }: { workoutType: string }) {
+  // Collapsed by default — it's a tall, decorative block that otherwise
+  // pushes the exercise list below the fold on every visit.
+  const [expanded, setExpanded] = useState(false);
   const [view, setView] = useState<"anterior" | "posterior">("anterior");
   const muscles = WORKOUT_MUSCLES_TO_LIB[workoutType] ?? [];
   const data = muscles.length > 0 ? [{ name: "Hit", muscles }] : [];
 
   return (
     <div className="rounded-2xl border border-neutral-800 bg-neutral-900 overflow-hidden">
-      <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-neutral-800">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center justify-between px-4 py-3.5 text-left hover:bg-neutral-800/40 active:bg-neutral-800/60 transition-colors"
+      >
         <h3 className="font-semibold text-sm">Muscles trained</h3>
-        <div className="flex gap-1 bg-neutral-800 rounded-lg p-0.5">
-          {(["anterior", "posterior"] as const).map((v) => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                view === v
-                  ? "bg-neutral-700 text-white"
-                  : "text-neutral-500 hover:text-white"
-              }`}
-            >
-              {v === "anterior" ? "Front" : "Back"}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="px-4 py-3 flex justify-center">
-        <Model
-          data={data}
-          type={view}
-          highlightedColors={["#16a34a"]}
-          bodyColor="#2a2a2a"
-          style={{ width: "10rem" }}
+        <ChevronDownIcon
+          className={`w-4 h-4 text-neutral-600 shrink-0 transition-transform ${
+            expanded ? "rotate-180" : ""
+          }`}
         />
-      </div>
+      </button>
+      {expanded && (
+        <div className="page-fade border-t border-neutral-800">
+          <div className="flex justify-end px-4 pt-3">
+            <div className="flex gap-1 bg-neutral-800 rounded-lg p-0.5">
+              {(["anterior", "posterior"] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setView(v)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    view === v
+                      ? "bg-neutral-700 text-white"
+                      : "text-neutral-500 hover:text-white"
+                  }`}
+                >
+                  {v === "anterior" ? "Front" : "Back"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="px-4 py-3 flex justify-center">
+            <Model
+              data={data}
+              type={view}
+              highlightedColors={["#16a34a"]}
+              bodyColor="#2a2a2a"
+              style={{ width: "10rem" }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -176,6 +176,10 @@ export default function Library() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search exercises…"
+          enterKeyHint="search"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          }}
           className="w-full bg-neutral-900 border border-neutral-800 rounded-xl pl-9 pr-4 py-3 text-sm focus:outline-none focus:border-neutral-600 placeholder-neutral-600"
         />
       </div>
@@ -383,6 +387,7 @@ function ExerciseSheet({
                   key={i}
                   src={`${IMG_BASE}${img}`}
                   alt={`${exercise.name} step ${i + 1}`}
+                  loading="lazy"
                   className="h-36 w-auto rounded-xl shrink-0 object-cover bg-neutral-800"
                 />
               ))}

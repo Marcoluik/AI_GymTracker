@@ -108,6 +108,11 @@ function Layout() {
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
 
+  // Tapping the tab you're already on scrolls back to the top — the native
+  // iOS tab-bar convention.
+  const scrollTop = () =>
+    mainRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+
   const signOut = async () => {
     await supabase.auth.signOut();
     navigate("/");
@@ -142,10 +147,10 @@ function Layout() {
         className="shrink-0 bg-neutral-950 border-t border-neutral-800 pb-[env(safe-area-inset-bottom)]"
       >
         <div className="flex">
-          <Tab to="/program" label="Program" icon={<ListIcon />} />
-          <Tab to="/workouts" label="Workouts" icon={<CalendarIcon />} />
-          <Tab to="/trends" label="Progress" icon={<BarChartIcon />} />
-          <Tab to="/library" label="Library" icon={<LibraryIcon />} />
+          <Tab to="/program" label="Program" icon={<ListIcon />} onReselect={scrollTop} />
+          <Tab to="/workouts" label="Workouts" icon={<CalendarIcon />} onReselect={scrollTop} />
+          <Tab to="/trends" label="Progress" icon={<BarChartIcon />} onReselect={scrollTop} />
+          <Tab to="/library" label="Library" icon={<LibraryIcon />} onReselect={scrollTop} />
         </div>
       </nav>
     </div>
@@ -156,14 +161,20 @@ function Tab({
   to,
   label,
   icon,
+  onReselect,
 }: {
   to: string;
   label: string;
   icon: React.ReactNode;
+  onReselect: () => void;
 }) {
+  const location = useLocation();
   return (
     <NavLink
       to={to}
+      onClick={() => {
+        if (location.pathname === to) onReselect();
+      }}
       className="flex-1 flex flex-col items-center justify-center gap-1 pt-2.5 pb-2 transition-colors"
     >
       {({ isActive }) => (

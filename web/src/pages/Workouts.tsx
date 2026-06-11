@@ -311,7 +311,7 @@ export default function Workouts() {
       )}
       {groups.map((g) => (
         <section key={g.key}>
-          <h2 className="text-[11px] uppercase tracking-[0.12em] font-semibold text-neutral-400 px-1 mb-2">
+          <h2 className="sticky top-0 z-10 -mx-4 -mt-2 mb-1 bg-neutral-950/90 backdrop-blur-sm px-5 py-2 text-[11px] uppercase tracking-[0.12em] font-semibold text-neutral-400">
             {g.key}
           </h2>
           <div className="space-y-2">
