@@ -10,21 +10,30 @@ body,
 }
 
 html, body {
-  /* Pin the app shell to the exact viewport edges. Deliberately NOT using
-     100vh/100dvh — in iOS standalone (home-screen) mode dvh subtracts a
-     phantom Safari toolbar, leaving a dead strip under the bottom nav.
-     Locking scrolling here also stops the Safari URL bar show/hide jitter;
-     only the inner <main> scrolls. */
+  /* Lock document scrolling so only the inner <main> scrolls — keeps the
+     Safari URL bar from showing/hiding in a normal browser tab. */
   overflow: hidden;
-  position: fixed;
-  inset: 0;
   width: 100%;
-  height: 100%;
 }
 
+/* The app shell is sized to the DYNAMIC viewport (dvh), which on iOS spans
+   the FULL screen — all the way down behind the home indicator. The bottom
+   <nav> then pads itself up with env(safe-area-inset-bottom) so its icons sit
+   just above the indicator.
+
+   Do NOT size the shell with `position: fixed; inset: 0`. On iOS 26 a fixed
+   inset:0 box fills only the shorter "layout viewport" and stops above the
+   home-indicator strip — which made the bottom tab bar float a whole row too
+   high, looking like a home-button phone. Sizing by 100dvh (with no bottom
+   inset) is what lets it reach the true screen edge.
+   Ref: iOS 26 fixed-position / safe-area regressions (e.g. mui/material-ui#46953). */
 #root {
-  position: absolute;
-  inset: 0;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100vh;   /* fallback for browsers without dvh */
+  height: 100dvh;  /* iOS: full visual viewport, incl. home-indicator area */
 }
 
 body {
