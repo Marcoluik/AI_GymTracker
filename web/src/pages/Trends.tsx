@@ -110,12 +110,20 @@ function Section({
   subtitle?: string;
   children: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  // Remember which sections you keep open between visits
+  const [open, setOpen] = useState(
+    () => localStorage.getItem(`trends-open:${title}`) === "1",
+  );
+  const toggle = () =>
+    setOpen((v) => {
+      localStorage.setItem(`trends-open:${title}`, v ? "0" : "1");
+      return !v;
+    });
   return (
     <div>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         className="w-full flex items-center justify-between gap-3 rounded-2xl border border-neutral-800 bg-neutral-900 px-4 py-3.5 text-left hover:bg-neutral-800/40 active:bg-neutral-800/60 transition-colors"
       >
         <div className="min-w-0">

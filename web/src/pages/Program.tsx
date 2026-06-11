@@ -35,6 +35,10 @@ type ProgramFromDb = Omit<Row, "is_bodyweight_base" | "to_failure" | "warmup_ena
   exercise_id?: string | null;
 };
 
+// Survives tab switches: the page renders instantly from the last fetch while
+// a fresh load runs in the background.
+let programCache: Row[] | null = null;
+
 const TYPES = ["chest", "back", "legs", "abs"] as const;
 const TYPE_LABEL: Record<string, string> = {
   chest: "Chest",
@@ -102,9 +106,9 @@ function smartWarmupCandidate(row: Row): boolean {
 }
 
 export default function Program() {
-  const [rows, setRows] = useState<Row[]>([]);
+  const [rows, setRows] = useState<Row[]>(programCache ?? []);
   const [progressing, setProgressing] = useState<Set<string>>(new Set());
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(programCache === null);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<Row | null>(null);
   const [addingType, setAddingType] = useState<string | null>(null);
@@ -169,16 +173,16 @@ export default function Program() {
     if (error) setError(error.message);
     else {
       const raw = (data ?? []) as ProgramFromDb[];
-      setRows(
-        raw.map((r) => ({
-          ...r,
-          is_bodyweight_base: !!r.is_bodyweight_base,
-          to_failure: !!r.to_failure,
-          warmup_enabled: r.warmup_enabled !== false,
-          per_set_weights: r.per_set_weights ?? null,
-          exercise_id: r.exercise_id ?? null,
-        })),
-      );
+      const mapped = raw.map((r) => ({
+        ...r,
+        is_bodyweight_base: !!r.is_bodyweight_base,
+        to_failure: !!r.to_failure,
+        warmup_enabled: r.warmup_enabled !== false,
+        per_set_weights: r.per_set_weights ?? null,
+        exercise_id: r.exercise_id ?? null,
+      }));
+      programCache = mapped;
+      setRows(mapped);
     }
     setLoading(false);
   }

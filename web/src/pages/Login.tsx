@@ -59,6 +59,7 @@ export default function Login() {
           className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-800 focus:outline-none focus:border-neutral-600 focus:ring-2 focus:ring-neutral-700 text-base"
           required
           autoComplete="current-password"
+          enterKeyHint="go"
         />
         <button
           type="submit"

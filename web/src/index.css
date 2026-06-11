@@ -55,6 +55,9 @@ nav {
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
+  /* No double-tap-to-zoom interpretation — rapid taps on +/- steppers
+     register immediately instead of waiting to see if it's a zoom */
+  touch-action: manipulation;
 }
 
 /* Subtle fade+rise when a page (or expanded section) appears */

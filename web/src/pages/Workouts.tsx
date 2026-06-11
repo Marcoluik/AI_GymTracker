@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
-import { ChevronRightIcon, CalendarIcon, SearchIcon } from "../components/icons";
+import { ChevronRightIcon, CalendarIcon, SearchIcon, XIcon } from "../components/icons";
 
 type Workout = {
   id: string;
@@ -137,14 +137,19 @@ function TypePill({ type }: { type: string }) {
 
 const PAGE_SIZE = 100;
 
+// Survives tab switches: the list renders instantly from the last fetch while
+// a fresh load runs in the background.
+let workoutsCache: Workout[] | null = null;
+let metricsCache: Record<string, WorkoutMetric> = {};
+
 export default function Workouts() {
-  const [workouts, setWorkouts] = useState<Workout[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [workouts, setWorkouts] = useState<Workout[]>(workoutsCache ?? []);
+  const [loading, setLoading] = useState(workoutsCache === null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
-  const [metrics, setMetrics] = useState<Record<string, WorkoutMetric>>({});
+  const [metrics, setMetrics] = useState<Record<string, WorkoutMetric>>(metricsCache);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [debouncedSearch, setDebouncedSearch] = useState("");
 
@@ -157,7 +162,8 @@ export default function Workouts() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      setLoading(true);
+      // With cached data, refresh silently instead of flashing skeletons
+      if (workoutsCache === null || debouncedSearch) setLoading(true);
       let q = supabase
         .from("workouts")
         .select("*")
@@ -176,6 +182,7 @@ export default function Workouts() {
       else {
         setWorkouts(data || []);
         setHasMore((data?.length ?? 0) === PAGE_SIZE);
+        if (!debouncedSearch) workoutsCache = data || [];
       }
       setLoading(false);
     })();
@@ -229,6 +236,7 @@ export default function Workouts() {
         metric.distanceKm = r.distance_km;
         metric.durationMinutes = r.duration_minutes;
       }
+      metricsCache = { ...metricsCache, ...next };
       setMetrics(next);
     })();
     return () => { cancelled = true; };
@@ -267,8 +275,18 @@ export default function Workouts() {
         onKeyDown={(e) => {
           if (e.key === "Enter") (e.target as HTMLInputElement).blur();
         }}
-        className="w-full bg-neutral-900 border border-neutral-800 rounded-xl pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:border-neutral-600 placeholder-neutral-600"
+        className="w-full bg-neutral-900 border border-neutral-800 rounded-xl pl-9 pr-10 py-2.5 text-sm focus:outline-none focus:border-neutral-600 placeholder-neutral-600"
       />
+      {search && (
+        <button
+          type="button"
+          onClick={() => setSearch("")}
+          aria-label="Clear search"
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-full text-neutral-500 hover:text-white active:bg-neutral-800"
+        >
+          <XIcon className="w-4 h-4" />
+        </button>
+      )}
     </div>
   );
 
